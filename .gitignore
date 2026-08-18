@@ -25,6 +25,9 @@ Makefile.local
 git-state.txt
 Kokkos_Version_info.*
 
+# Do not ignore Self-gravity/Bessel
+!test/SelfGravity/BesselKernel/
+!test/SelfGravity/BesselKernel/**
 
 # test artifacts
 test/**/*.o
@@ -42,9 +45,6 @@ test/**/*.dat
 test/**/cmake_packages*
 test/**/
 idefix-tests.junit.xml
-# Do not ignore Self-gravity/Bessel
-!test/SelfGravity/BesselKernel/
-!test/SelfGravity/BesselKernel/**
 
 
 # machine specific cache and hidden files
