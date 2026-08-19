@@ -43,7 +43,7 @@ test/**/*.csv
 test/**/*.pyc
 test/**/*.dat
 test/**/cmake_packages*
-test/**/
+#test/**/
 idefix-tests.junit.xml
 
 
