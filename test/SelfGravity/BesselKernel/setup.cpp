@@ -34,43 +34,35 @@ public:
     this->n2 = iend-ibeg;
     this->n2fft = 2*n2;
 
-    //this->n0 = data.np_tot[KDIR];
-    //this->n1 = data.np_tot[JDIR];
-    //this->n2 = data.np_tot[IDIR];
-    //this->n2fft = 2*data.np_tot[IDIR];
-
-    this->kernelxFFT_hat = IdefixArray2D<Kokkos::complex<real> >("kernelxFFT_hat", n1, n2fft/2+1);
-    this->kernelyFFT_hat = IdefixArray2D<Kokkos::complex<real> >("kernelyFFT_hat", n1, n2fft/2+1);
+    this->sigmaFFT = IdefixArray2D<real>("sigmaFFT", n1, n2fft);
     this->forceSGx = IdefixArray3D<real>("forceSGx", data.np_tot[KDIR], data.np_tot[JDIR], data.np_tot[IDIR]);
     this->forceSGy = IdefixArray3D<real>("forceSGy", data.np_tot[KDIR], data.np_tot[JDIR], data.np_tot[IDIR]);
+    this->forceSGx_padded = IdefixArray2D<real>("forceSGx_padded", n1, n2fft);
+    this->forceSGy_padded = IdefixArray2D<real>("forceSGy_padded", n1, n2fft);
 
-    this->sigmaFFT = IdefixArray2D<real>("sigmaFFT", n1, n2fft);
     this->sigmaFFT_hat = IdefixArray2D<Kokkos::complex<real> >("sigmaFFT_hat", n1, n2fft/2+1);
     this->forceSGx_hat = IdefixArray2D<Kokkos::complex<real> >("forceSGx_hat", n1, n2fft/2+1);
     this->forceSGy_hat = IdefixArray2D<Kokkos::complex<real> >("forceSGy_hat", n1, n2fft/2+1);
-    this->forceSGx_padded = IdefixArray2D<real>("forceSGx_padded", n1, n2fft);
-    this->forceSGy_padded = IdefixArray2D<real>("forceSGy_padded", n1, n2fft);
+    this->kernelxFFT_hat = IdefixArray2D<Kokkos::complex<real> >("kernelxFFT_hat", n1, n2fft/2+1);
+    this->kernelyFFT_hat = IdefixArray2D<Kokkos::complex<real> >("kernelyFFT_hat", n1, n2fft/2+1);
   }
 
 
-  /* members of the class */
-  //IdefixArray2D<Kokkos::complex<real> > kernelxFFT_hat;
-
+  /* Members of the class */
   int ibeg, jbeg, kbeg, iend, jend, kend;
   int n0, n1, n2, n2fft;
 
-  IdefixArray2D<Kokkos::complex<real> > kernelxFFT_hat;
-  IdefixArray2D<Kokkos::complex<real> > kernelyFFT_hat;
+  IdefixArray2D<real> sigmaFFT;
   IdefixArray3D<real> forceSGx;
   IdefixArray3D<real> forceSGy;
-
-
-  IdefixArray2D<real> sigmaFFT;
-  IdefixArray2D<Kokkos::complex<real> > sigmaFFT_hat;
-  IdefixArray2D<Kokkos::complex<real> > forceSGx_hat;
-  IdefixArray2D<Kokkos::complex<real> > forceSGy_hat;
   IdefixArray2D<real> forceSGx_padded;
   IdefixArray2D<real> forceSGy_padded;
+
+  IdefixArray2D<Kokkos::complex<real> > sigmaFFT_hat;
+  IdefixArray2D<Kokkos::complex<real> > kernelxFFT_hat;
+  IdefixArray2D<Kokkos::complex<real> > kernelyFFT_hat;
+  IdefixArray2D<Kokkos::complex<real> > forceSGx_hat;
+  IdefixArray2D<Kokkos::complex<real> > forceSGy_hat;
 
 };
 
@@ -108,9 +100,7 @@ void LISOTHSoundSpeed(DataBlock &data, const real t, IdefixArray3D<real> &cs) {
 
 void ComputeSgKernel(DataBlock &data) {
 
-  idfx::pushRegion("SG kernel");   // Profiling and debugging
 
-  int n0 = myGlobals->n0;
   int n1 = myGlobals->n1;
   int n2 = myGlobals->n2;
   int n2fft = myGlobals->n2fft;
@@ -139,6 +129,7 @@ void ComputeSgKernel(DataBlock &data) {
   IdefixHostArray2D<real> kernelyFFT_host("kernelyFFT_host", n1, n2fft);
 
   int ii = n2fft/2+1;
+  int jj = n1/2+1;
   real alpha = xend/xbeg;
   real ratio = pow(alpha, 1.0/n2);
   real aspect_ratio{aspect_ratio_glob};
@@ -148,13 +139,13 @@ void ComputeSgKernel(DataBlock &data) {
   Kokkos::deep_copy(y_mirror, y);
   Kokkos::deep_copy(y_host, y_mirror);
 
-  IdefixHostArray1D<real> dy_host("dy_host", data.np_tot[JDIR]);
+  IdefixHostArray1D<real> dy_host("dy_host", data.np_tot[JDIR]); // Include ghost cell
   auto dy_mirror = Kokkos::create_mirror_view(dy);
   Kokkos::deep_copy(dy_mirror, dy);
   Kokkos::deep_copy(dy_host, dy_mirror);
 
-  int jj = data.np_tot[JDIR]/2+1;
-  real y_c = y_host(jj);
+  int jc = data.np_tot[JDIR]/2+1;
+  real y_c = y_host(jc);
   real dxFFT = pow(alpha, 0.5) - pow(alpha,-0.5); 
   real L_sg;
 
@@ -166,10 +157,12 @@ void ComputeSgKernel(DataBlock &data) {
   }
 
 
+   printf("(n2fft=%d, n1=%d)\n", n2fft, n1);
+
   for(int j = 0; j < n1 ; j++) {
     for(int i = 0; i < n2fft ; i++) {
  
-      if (i==ii and j==jj){ // A fluid element does not feel it's own gravity
+      if (i==ii and j==jj){ /* A fluid element does not feel it's own gravity */
         kernelxFFT_host(j,i) = 0;
         kernelyFFT_host(j,i) = 0;
       } else {
@@ -184,7 +177,7 @@ void ComputeSgKernel(DataBlock &data) {
                  * std::exp(X_aux)
                  * ( std::cyl_bessel_kl(1., X_aux)
                  - std::cyl_bessel_kl(0., X_aux) );
-        } else { // Taylor expansion at inifinity in order to avoid exp overflow
+        } else { /* Taylor expansion at inifinity in order to avoid exp overflow  */
             L_sg = std::pow(M_PI, 0.5)
                  * X_aux
                  * 0.5 * std::pow(M_PI/2., 0.5)
@@ -196,7 +189,8 @@ void ComputeSgKernel(DataBlock &data) {
         kernelxFFT_host(j,i) = L_sg/M_PI/d_sqr * pow(exp(-xFFT_host(i))/Hsqr_by_rpp_host(i),1.5) * (exp(xFFT_host(i))-cos(y_host(jbeg+j)-y_c)) * ds;
         kernelyFFT_host(j,i) = L_sg/M_PI/d_sqr * pow(exp(-xFFT_host(i))/Hsqr_by_rpp_host(i),1.5) * sin(y_host(jbeg+j)-y_c) * ds;
 
-        //if (std::isnan(kernelxFFTi_host(j, i))) { printf("NaN detected at (i=%d, j=%d)\n", i, j);}
+        /* Debug */
+        if (std::isnan(kernelxFFT_host(j, i))) { printf("NaN detected at (i=%d, j=%d)\n", i, j);}
       }
     }
   }
@@ -215,24 +209,12 @@ void ComputeSgKernel(DataBlock &data) {
   KokkosFFT::rfft2(exec, kernelxFFT, kernelxFFT_hat);
   KokkosFFT::rfft2(exec, kernelyFFT, kernelyFFT_hat);
 
-//  /* Fill sigmaFFT with zeros */
-//  idefix_for("Fill sigmaFFT with zeros", 0, n1, 0, n2fft,
-//              KOKKOS_LAMBDA (int j, int i) {
-//                sigmaFFT(j,i) = 0.0 ;
-//              });
-
-  exec.fence();
-
-  idfx::popRegion();
 
 }
 
 
 
 void ComputeSgForces(DataBlock &data) {
-  // TODO: Check what is the value of G !
-  //idfx::pushRegion("SG Computation: vars");   // Profiling and debugging
-
   IdefixArray4D<real> Vc=data.hydro->Vc;
 
   int n0 = myGlobals->n0;
@@ -243,9 +225,7 @@ void ComputeSgForces(DataBlock &data) {
   int ibeg = myGlobals->ibeg;
   int jbeg = myGlobals->jbeg;
   int iend = myGlobals->iend;
-  int jend = myGlobals->jend;
 
-  //IdefixArray2D<Kokkos::complex<real> > kernelxFFT_hat = myGlobals->kernelxFFT_hat;
   IdefixArray2D<Kokkos::complex<real> > kernelxFFT_hat = myGlobals->kernelxFFT_hat;
   IdefixArray2D<Kokkos::complex<real> > kernelyFFT_hat = myGlobals->kernelyFFT_hat;
   IdefixArray3D<real> forceSGx = myGlobals->forceSGx;
@@ -257,35 +237,31 @@ void ComputeSgForces(DataBlock &data) {
   IdefixArray2D<real> forceSGx_padded = myGlobals->forceSGx_padded;
   IdefixArray2D<real> forceSGy_padded = myGlobals->forceSGy_padded;
 
-
+  real G = 1.0; /* TODO: What is it's value ? */
 
   execution_space exec;
 
-  //idfx::popRegion();
 
-  //idfx::pushRegion("SG Computation: Plans creation");   // Profiling and debugging
+  /* Create plans only once */
 
   static KokkosFFT::Plan forward_plan(
-        execution_space(),              // Execution space instance
-        sigmaFFT,                       // Input view
-        sigmaFFT_hat,                   // Output view
-        KokkosFFT::Direction::forward,  // Direction
+        execution_space(),              
+        sigmaFFT,                       
+        sigmaFFT_hat,                   
+        KokkosFFT::Direction::forward,  
         /*axes=*/axes_type({0, 1}) 
     );
 
   static KokkosFFT::Plan backward_plan(
-        execution_space(),              // Execution space instance
-        forceSGx_hat,                   // Input view
-        forceSGx_padded,                // Output view
-        KokkosFFT::Direction::backward, // Direction
+        execution_space(),              
+        forceSGx_hat,                   
+        forceSGx_padded,                
+        KokkosFFT::Direction::backward, 
         /*axes=*/axes_type({0, 1}) 
     );
 
 
-  //idfx::popRegion();
-
-  //idfx::pushRegion("SG Computation: Fill sigma");   // Profiling and debugging
-
+  /* Fill sigma */
   idefix_for("FFT_loop", 0, n0, 0, n1, 0, n2fft,
               KOKKOS_LAMBDA (int k, int j, int i) {
                 if (i<iend) {
@@ -295,39 +271,24 @@ void ComputeSgForces(DataBlock &data) {
                 }
               });
 
-  //idfx::popRegion();
 
-  //idfx::pushRegion("SG Computation: FFT(sigma)");   // Profiling and debugging
   /* 2D Forward Transform */
   KokkosFFT::execute(forward_plan, sigmaFFT, sigmaFFT_hat); 
-
-  //idfx::popRegion();
-
-  //idfx::pushRegion("SG Computation: FFT(sigma)*FFT(Kernel)");   // Profiling and debugging
 
   /* Product in Fourier space */
   idefix_for("FFT_loop", 0, n1, 0, n2fft / 2 + 1,
               KOKKOS_LAMBDA(int j, int i) {
-        forceSGx_hat(j, i) = -kernelxFFT_hat(j, i) * sigmaFFT_hat(j, i);
-        forceSGy_hat(j, i) = -kernelyFFT_hat(j, i) * sigmaFFT_hat(j, i);
+        forceSGx_hat(j, i) = -G * kernelxFFT_hat(j, i) * sigmaFFT_hat(j, i);
+        forceSGy_hat(j, i) = -G * kernelyFFT_hat(j, i) * sigmaFFT_hat(j, i);
     }
   ); 
-
-  //idfx::popRegion();
-
-
-//  /* Shift the zero-frequency component to the center of the spectrum */
-//  KokkosFFT::fftshift(exec, forceSGx_hat, 0);
-//  KokkosFFT::fftshift(exec, forceSGy_hat, 0);
-
-  //idfx::pushRegion("SG Computation: FFT^-1(ForceSG)");   // Profiling and debugging
 
   /* 2D Backward Transform */
   KokkosFFT::execute(backward_plan, forceSGx_hat, forceSGx_padded);
   KokkosFFT::execute(backward_plan, forceSGy_hat, forceSGy_padded);
 
-  //idfx::popRegion();
 
+//  /* ********************************************************* */
 //  /* Sanity check : FFT^-1(FFT(sigma)) = sigma and kernel arrays*/
 //  KokkosFFT::irfft2(exec, sigmaFFT_hat, sigmaFFT);
 //  idfx::DumpArray("sigmaFFT.npy", sigmaFFT); 
@@ -348,11 +309,8 @@ void ComputeSgForces(DataBlock &data) {
 //
 //  idfx::DumpArray("kernelx.npy", kernelx_out); 
 //  idfx::DumpArray("kernely.npy", kernely_out); 
+//  /* ********************************************************* */
 
-  //exec.fence();
-
-
-  //idfx::pushRegion("SG Computation: Force_padded into Idefix arrays");   // Profiling and debugging
 
   /* Copy padded arrays into standard Idefix arrays */
   idefix_for("FFT_loop", 0, n0, 0, n1, 0, n2,
@@ -362,7 +320,6 @@ void ComputeSgForces(DataBlock &data) {
                 forceSGy(k,jbeg+j,i+ibeg) = forceSGy_padded(j,i_offset) ;
               });
 
-  //idfx::popRegion();
 }
 
 
@@ -399,7 +356,7 @@ void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
 
   real dt = dtin;
 
-  idfx::pushRegion("SG Force tot");
+  idfx::pushRegion("Self-gravity spectral: force");
   ComputeSgForces(*data); 
   idfx::popRegion();
 
@@ -407,18 +364,18 @@ void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
   IdefixArray3D<real> forceSGy = myGlobals->forceSGy;
 
 
-//  idefix_for("MySgSourceTerm",
-//    0, data->np_tot[KDIR],
-//    0, data->np_tot[JDIR],
-//    0, data->np_tot[IDIR],
-//              KOKKOS_LAMBDA (int k, int j, int i) {
-//                Uc(MX1,k,j,i) += -Vc(RHO,k,j,i)*forceSGx(k,j,i)*dt;
-//                Uc(MX2,k,j,i) += -Vc(RHO,k,j,i)*forceSGy(k,j,i)*dt;
-//#ifndef ISOTHERMAL
-//                Uc(ENG, k,j,i) += -Vc(RHO,k,j,i)*(forceSGx(k,j,i)*Vc(VX1,k,j,i) + forceSGy(k,j,i)*Vc(VX2,k,j,i)) * dt;
-//#endif
-//  
-//  });
+  idefix_for("MySgSourceTerm",
+    0, data->np_tot[KDIR],
+    0, data->np_tot[JDIR],
+    0, data->np_tot[IDIR],
+              KOKKOS_LAMBDA (int k, int j, int i) {
+                Uc(MX1,k,j,i) += -Vc(RHO,k,j,i)*forceSGx(k,j,i)*dt;
+                Uc(MX2,k,j,i) += -Vc(RHO,k,j,i)*forceSGy(k,j,i)*dt;
+#ifndef ISOTHERMAL
+                Uc(ENG, k,j,i) += -Vc(RHO,k,j,i)*(forceSGx(k,j,i)*Vc(VX1,k,j,i) + forceSGy(k,j,i)*Vc(VX2,k,j,i)) * dt;
+#endif
+  
+  });
 
 }
 
@@ -475,8 +432,15 @@ void Setup::InitFlow(DataBlock &data) {
     d.SyncToDevice();
 
     /* Compute self-gravity */
+    idfx::pushRegion("Self-gravity spectral: kernel (init)");   // Profiling and debugging
     ComputeSgKernel(data); 
+    idfx::popRegion();
+
+
+    idfx::pushRegion("Self-gravity spectral: force (init)");   // Profiling and debugging
     ComputeSgForces(data); 
+    idfx::popRegion();
+
     IdefixArray3D<real> forceSGx = myGlobals->forceSGx;
 
     /* Update velocity profile to be at centrifugal equilibrium */
