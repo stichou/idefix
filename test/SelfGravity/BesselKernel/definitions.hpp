@@ -3,5 +3,5 @@
 
 #define     GEOMETRY        POLAR
 
-#define     ISOTHERMAL
+//#define     ISOTHERMAL
 
