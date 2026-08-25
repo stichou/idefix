@@ -308,6 +308,13 @@ void ComputeSgForces(DataBlock &data) {
 
   execution_space exec;
 
+  /* Compute kernel only once */
+  static auto init = [&] {
+    idfx::pushRegion("Self-gravity spectral: kernel (init)");   // Profiling and debugging
+    ComputeSgKernel(data); 
+    idfx::popRegion();
+    return 0; // Non-void return required for static variable
+  }();
 
   /* Create plans only once */
 
@@ -450,6 +457,13 @@ void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
 #endif
 
   real dt = dtin;
+  real xbeg = data->xbeg[IDIR];
+  real xend = data->xend[IDIR];
+  real omega_in = sqrt(1.0/pow(xbeg,3.0));
+  real t_in = 2 * M_PI / omega_in; 
+  real t_0 = 110 * t_in;
+  real t_ramp = 5*t_in;
+
   real beta_cooling_target{beta_cooling_glob};
   real beta_cooling = 30.0 + 0.5*(1+tanh(t-5960.0))*(beta_cooling_target-30.0);
 
@@ -480,7 +494,7 @@ void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
                 //real PRS0 = 0.0;
 
                 Uc(ENG, k,j,i) += Vc(RHO,k,j,i)*(forceSGx(k,j,i)*Vc(VX1,k,j,i) + forceSGy(k,j,i)*Vc(VX2,k,j,i)) * dt;
-                Uc(ENG, k,j,i) += -dt*(Vc(PRS,k,j,i)-0.1*PRS0)/(gamma-1.0)*omega_k/beta_cooling;
+                Uc(ENG, k,j,i) += -dt*(Vc(PRS,k,j,i)-0.001*PRS0)/(gamma-1.0)*omega_k/beta_cooling;
 #endif
   
   });
@@ -552,11 +566,6 @@ void Setup::InitFlow(DataBlock &data) {
     d.SyncToDevice();
 
     /* Compute self-gravity */
-    idfx::pushRegion("Self-gravity spectral: kernel (init)");   // Profiling and debugging
-    ComputeSgKernel(data); 
-    idfx::popRegion();
-
-
     idfx::pushRegion("Self-gravity spectral: force (init)");   // Profiling and debugging
     ComputeSgForces(data); 
     idfx::popRegion();
