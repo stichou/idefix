@@ -5,3 +5,6 @@
 
 //#define     ISOTHERMAL
 
+
+#define SMALL_PRESSURE_TEMPERATURE 1e-9
+

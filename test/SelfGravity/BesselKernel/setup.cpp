@@ -37,6 +37,7 @@ public:
     this->sigmaFFT = IdefixArray2D<real>("sigmaFFT", n1, n2fft);
     this->forceSGx = IdefixArray3D<real>("forceSGx", data.np_tot[KDIR], data.np_tot[JDIR], data.np_tot[IDIR]);
     this->forceSGy = IdefixArray3D<real>("forceSGy", data.np_tot[KDIR], data.np_tot[JDIR], data.np_tot[IDIR]);
+    this->forceSGx_t0 = IdefixArray3D<real>("forceSGx(t=0)", data.np_tot[KDIR], data.np_tot[JDIR], data.np_tot[IDIR]);
     this->forceSGx_padded = IdefixArray2D<real>("forceSGx_padded", n1, n2fft);
     this->forceSGy_padded = IdefixArray2D<real>("forceSGy_padded", n1, n2fft);
 
@@ -55,6 +56,7 @@ public:
   IdefixArray2D<real> sigmaFFT;
   IdefixArray3D<real> forceSGx;
   IdefixArray3D<real> forceSGy;
+  IdefixArray3D<real> forceSGx_t0;
   IdefixArray2D<real> forceSGx_padded;
   IdefixArray2D<real> forceSGy_padded;
 
@@ -76,52 +78,7 @@ real sigma0_glob{-1};
 real sigma_slope_glob{-1};
 real gamma_glob{-1};
 real beta_cooling_glob{-1};
-
-// User-defined boundaries
-void UserdefBoundary(Hydro *hydro, int dir, BoundarySide side, real t) {
-  IdefixArray4D<real> Vc = hydro->Vc;
-  auto *data = hydro->data;
-  IdefixArray1D<real> x1 = data->x[IDIR];
-  if(dir==IDIR) {
-    int ighost,ibeg,iend;
-    if(side == left) {
-      ighost = data->beg[IDIR];
-      ibeg = 0;
-      iend = data->beg[IDIR];
-      idefix_for("UserDefBoundary",
-        0, data->np_tot[KDIR],
-        0, data->np_tot[JDIR],
-        ibeg, iend,
-        KOKKOS_LAMBDA (int k, int j, int i) {
-          real R=x1(i);
-          real Vk = 1.0/sqrt(R);
-
-          Vc(RHO,k,j,i) = Vc(RHO,k,j,2*ighost - i +1);
-          Vc(VX1,k,j,i) = - Vc(VX1,k,j,2*ighost - i +1);
-          Vc(VX2,k,j,i) = Vk;
-          Vc(VX3,k,j,i) = Vc(VX3,k,j,2*ighost - i +1);
-        });
-    }
-    else if(side==right) {
-      ighost = data->end[IDIR]-1;
-      ibeg=data->end[IDIR];
-      iend=data->np_tot[IDIR];
-      idefix_for("UserDefBoundary",
-        0, data->np_tot[KDIR],
-        0, data->np_tot[JDIR],
-        ibeg, iend,
-        KOKKOS_LAMBDA (int k, int j, int i) {
-          real R=x1(i);
-          real Vk = 1.0/sqrt(R);
-
-          Vc(RHO,k,j,i) = Vc(RHO,k,j,ighost);
-          Vc(VX1,k,j,i) = Vc(VX1,k,j,ighost);
-          Vc(VX2,k,j,i) = Vk;
-          Vc(VX3,k,j,i) = Vc(VX3,k,j,ighost);
-        });
-    }
-  }
-}
+real output_vtk_glob{-1};
 
 // hydro functions to enroll
 // note that everywhere we make the assumption GM = 1, so that
@@ -195,8 +152,7 @@ void ComputeSgKernel(DataBlock &data) {
   Kokkos::deep_copy(dy_mirror, dy);
   Kokkos::deep_copy(dy_host, dy_mirror);
 
-  int jc = data.np_tot[JDIR]/2+1;
-  real y_c = y_host(jc);
+  real y_c = 0.0;
   real dxFFT = pow(ratio, 0.5) - pow(ratio,-0.5); 
   real L_sg;
 
@@ -387,11 +343,24 @@ void ComputeSgForces(DataBlock &data) {
 
 /* Fargo velocity=Keplerian rotation */
 void FargoVelocity(DataBlock &data, IdefixArray2D<real> &Vphi) {
-  IdefixArray1D<real> x1 = data.x[IDIR];
+  real aspect_ratio{aspect_ratio_glob};
+  real sigma_slope{sigma_slope_glob};
+  IdefixArray1D<real> x = data.x[IDIR];
+
+  IdefixArray3D<real> forceSGx_t0 = myGlobals->forceSGx_t0;
 
   idefix_for("FargoVphi",0,data.np_tot[KDIR], 0, data.np_tot[IDIR],
       KOKKOS_LAMBDA (int k, int i) {
-      Vphi(k,i) = 1.0/sqrt(x1(i));
+      real r = x(i);
+      real omega_k = pow(r,-1.5);
+      real vk_sqr = pow(omega_k*r,2.0);
+      real vphi_sqr;
+
+      vphi_sqr = vk_sqr 
+               + pow(aspect_ratio, 2.0) * (sigma_slope-1) / r 
+               - r*forceSGx_t0(k,3,i);
+
+      Vphi(k,i) = sqrt(vphi_sqr);
   });
 }
 
@@ -462,13 +431,17 @@ void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
   real omega_in = sqrt(1.0/pow(xbeg,3.0));
   real t_in = 2 * M_PI / omega_in; 
   real t_0 = 110 * t_in;
-  real t_ramp = 5*t_in;
+  real t_ramp = 3.0*t_in;
+  real t_output{output_vtk_glob};
+  static int n_beta=t/t_output;
 
   real beta_cooling_target{beta_cooling_glob};
-  real beta_cooling = 30.0 + 0.5*(1+tanh(t-5960.0))*(beta_cooling_target-30.0);
+  real beta_cooling = 30.0 + 0.5*(1+tanh((t-t_0)/t_ramp))*(beta_cooling_target-30.0);
 
-  
-  //printf("beta_cooling=%f\n", beta_cooling);
+  if (t >= n_beta * t_output){
+    printf("beta_cooling=%f\n", beta_cooling);
+    n_beta += 1;
+  }
 
   idfx::pushRegion("Self-gravity spectral: force");
   ComputeSgForces(*data); 
@@ -490,11 +463,11 @@ void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
                 real omega_k = pow(R,-1.5);
                 real cs0 = aspect_ratio * R * omega_k;
                 real RHO0 = sigma0 * pow(R, sigma_slope);
-                real PRS0 = RHO0*cs0*cs0/gamma;
-                //real PRS0 = 0.0;
+                real TEMP0 = cs0*cs0/gamma;
+                TEMP0 = 0.0;
 
                 Uc(ENG, k,j,i) += Vc(RHO,k,j,i)*(forceSGx(k,j,i)*Vc(VX1,k,j,i) + forceSGy(k,j,i)*Vc(VX2,k,j,i)) * dt;
-                Uc(ENG, k,j,i) += -dt*(Vc(PRS,k,j,i)-0.001*PRS0)/(gamma-1.0)*omega_k/beta_cooling;
+                Uc(ENG, k,j,i) += -dt*(Vc(PRS,k,j,i)-0.001*Vc(RHO,k,j,i)*TEMP0)/(gamma-1.0)*omega_k/beta_cooling;
 #endif
   
   });
@@ -504,7 +477,7 @@ void MySourceTerm(Hydro *hydro, const real t, const real dtin) {
 
 
 Setup::Setup(Input &input, Grid &grid, DataBlock &data, Output &output) {
-    data.hydro->EnrollUserDefBoundary(&UserdefBoundary);  // BC for gas
+//    data.hydro->EnrollUserDefBoundary(&UserdefBoundary);  // BC for gas
 #ifdef ISOTHERMAL
     data.hydro->EnrollIsoSoundSpeed(&MySoundSpeed);
 #endif
@@ -518,6 +491,7 @@ Setup::Setup(Input &input, Grid &grid, DataBlock &data, Output &output) {
 #ifndef ISOTHERMAL
     gamma_glob = data.hydro->eos->GetGamma();
 #endif
+    output_vtk_glob = input.Get<real>("Output", "vtk", 0);   
 
     /* Initialise Global variables */
     myGlobals = new MyGlobalClass(data);
@@ -556,8 +530,6 @@ void Setup::InitFlow(DataBlock &data) {
           real X = (r-jump_radius)/jump_width;
 
           d.Vc(RHO,k,j,i) = sigma0 * pow(r, sigma_slope) ; 
-          //d.Vc(RHO,k,j,i) = sigma0 * pow(r, sigma_slope) * 0.5 * (1.00001 + tanh(X)) ; 
-
         }
       }
     }
@@ -571,6 +543,17 @@ void Setup::InitFlow(DataBlock &data) {
     idfx::popRegion();
 
     IdefixArray3D<real> forceSGx = myGlobals->forceSGx;
+    IdefixArray3D<real> forceSGx_t0 = myGlobals->forceSGx_t0;
+
+    idefix_for("Store initial radial SG force",
+      0, d.np_tot[KDIR],
+      0, d.np_tot[JDIR],
+      0, d.np_tot[IDIR],
+                KOKKOS_LAMBDA (int k, int j, int i) {
+                  forceSGx_t0(k,j,i) = forceSGx(k,j,i);
+    });
+
+
     IdefixHostArray3D<real> forceSGx_host("forceSGx_host (init)", data.np_tot[KDIR], data.np_tot[JDIR], data.np_tot[IDIR]);
     auto forceSGx_mirror = Kokkos::create_mirror_view(forceSGx);
     Kokkos::deep_copy(forceSGx_mirror, forceSGx);
@@ -594,14 +577,8 @@ void Setup::InitFlow(DataBlock &data) {
                    + pow(aspect_ratio, 2.0) * (sigma_slope-1) / r 
                    - r*forceSGx_host(k,j,i);
 
-          /* Tapered density in the inner region (J. A. Rendon Restrepo) */
-          //diffrSigma_by_Sigma = p/r + 1./jump_width/pow(cosh(X),2.0)/(1.00001 + tanh(X));
-          //vphi_sqr = vk_sqr \
-          //           + pow(aspect_ratio, 2.0)*(diffrSigma_by_Sigma-1/r) \
-          //           - r*forceSGx_host(k,j,i);
-
           /* Debug */
-          if (vphi_sqr<0.0 && i>=data.beg[IDIR] && i<=data.end[IDIR]){ 
+          if (j==data.beg[JDIR] && vphi_sqr<0.0 && i>=data.beg[IDIR] && i<=data.end[IDIR]){ 
             printf("Negative vphi_sqr detected at (i=%d, j=%d)\n", i, j);
           }
 
