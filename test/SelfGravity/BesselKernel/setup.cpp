@@ -108,7 +108,6 @@ void MySoundSpeed(DataBlock &data, const real t, IdefixArray3D<real> &cs) {
 void ComputeSgKernel(DataBlock &data) {
 
 
-  int n0 = myGlobals->n0;
   int n1 = myGlobals->n1;
   int n2 = myGlobals->n2;
   int n2fft = myGlobals->n2fft;
@@ -136,8 +135,8 @@ void ComputeSgKernel(DataBlock &data) {
   IdefixHostArray2D<real> kernelxFFT_host("kernelxFFT_host", n1, n2fft);
   IdefixHostArray2D<real> kernelyFFT_host("kernelyFFT_host", n1, n2fft);
 
-  int ii = n2fft/2+1;
-  int jj = n1/2+1;
+  int ii = n2fft/2;
+
   real alpha = xend/xbeg;
   real ratio = pow(alpha, 1.0/n2);
   real aspect_ratio{aspect_ratio_glob};
@@ -152,7 +151,7 @@ void ComputeSgKernel(DataBlock &data) {
   Kokkos::deep_copy(dy_mirror, dy);
   Kokkos::deep_copy(dy_host, dy_mirror);
 
-  real y_c = 0.0;
+  real y_c = y_host(jbeg);
   real dxFFT = pow(ratio, 0.5) - pow(ratio,-0.5); 
   real L_sg;
 
@@ -167,7 +166,7 @@ void ComputeSgKernel(DataBlock &data) {
   for(int j = 0; j < n1 ; j++) {
     for(int i = 0; i < n2fft ; i++) {
  
-      if (i==ii and j==jj){ /* A fluid element does not feel it's own gravity */
+      if (i==ii and j==0){ /* A fluid element does not feel it's own gravity */
         kernelxFFT_host(j,i) = 0;
         kernelyFFT_host(j,i) = 0;
       } else {
@@ -217,6 +216,7 @@ void ComputeSgKernel(DataBlock &data) {
   ///* ********************************************************** */
   ///* Sanity check : FFT^-1(FFT(kernel)) = kernel                */
   ///* ********************************************************** */
+  //int n0 = myGlobals->n0;
   //IdefixArray3D<real> kernelx_out("kernelx_out", n0, n1, n2);
   //IdefixArray3D<real> kernely_out("kernely_out", n0, n1, n2);
 
@@ -568,7 +568,6 @@ void Setup::InitFlow(DataBlock &data) {
           real omega_k = pow(r,-1.5);
           real vk_sqr = pow(omega_k*r,2.0);
           real vphi_sqr;
-          real p = sigma_slope;
           real diffrSigma_by_Sigma;
           real X = (r-jump_radius)/jump_width;
           
