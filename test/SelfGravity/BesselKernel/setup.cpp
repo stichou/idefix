@@ -144,11 +144,11 @@ real ComputeMeanAspectRatio(DataBlock &data) {
   MPI_Allreduce(MPI_IN_PLACE, &inv_h_sum, 1, realMPI, MPI_SUM, MPI_COMM_WORLD);
 #endif
 
-  int ncells = (iend-ibeg)*(jend-jbeg)*(kend-kbeg);
+  long int ncells_global = (long int)data.mygrid->np_int[KDIR]
+                         * (long int)data.mygrid->np_int[JDIR]
+                         * (long int)data.mygrid->np_int[IDIR];
 
-  inv_h_sum = inv_h_sum/ncells;
-
-  h_ave = 1/inv_h_sum;
+  h_ave = ncells_global/inv_h_sum;
 
   return h_ave;  
 
@@ -287,7 +287,6 @@ void ComputeSgKernel(DataBlock &data) {
   IdefixArray1D<real> x=data.x[IDIR];
   IdefixArray1D<real> y=data.x[JDIR];
   IdefixArray1D<real> dy = data.dx[JDIR];
-  IdefixArray1D<real> xFFT("x_fft", n2fft);
   IdefixArray1D<real> Hsqr_by_rpp("Hsqr_by_rpp", n2fft);
   
   IdefixArray2D<real> kernelxFFT("kernelxFFT", n1, n2fft);
@@ -626,6 +625,7 @@ void FargoVelocity(DataBlock &data, IdefixArray2D<real> &Vphi) {
   real aspect_ratio{aspect_ratio_glob};
   real sigma_slope{sigma_slope_glob};
   IdefixArray1D<real> x = data.x[IDIR];
+  int jbeg = myGlobals->jbeg;
 
   IdefixArray3D<real> forceSGx_t0 = myGlobals->forceSGx_t0;
 
@@ -638,7 +638,7 @@ void FargoVelocity(DataBlock &data, IdefixArray2D<real> &Vphi) {
 
       vphi_sqr = vk_sqr 
                + pow(aspect_ratio, 2.0) * (sigma_slope-1) / r 
-               - r*forceSGx_t0(k,3,i);
+               - r*forceSGx_t0(k,jbeg,i);
 
       Vphi(k,i) = sqrt(vphi_sqr);
   });
