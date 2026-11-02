@@ -241,19 +241,17 @@ void ComputeIndKernel(DataBlock &data) {
 
   execution_space exec;
 
-
-  real d_sqr_ind = 1.0/pow(aspect_ratio, 2.0);
+  real d_ind = 1.0/aspect_ratio;
+  real d_sqr_ind = pow(d_ind, 2.0);
   real X_aux_ind = d_sqr_ind/4.0;
   real L_sg_ind = Compute_L_sg(X_aux_ind);
-  real K_sg_ind = 1.0/M_PI/aspect_ratio * L_sg_ind;
+  real K_sg_ind = d_ind / M_PI * L_sg_ind;
 
   for(int j = 0; j < n1 ; j++) {
     for(int i = 0; i < n2fft ; i++) {
       real ds = dxFFT * dy_host(jbeg+j); 
-
       kernelIndxFFT_host(j,i) = -sqrt(2.0) * K_sg_ind * cos(y_host(jbeg+j)-y_c) * ds; 
       kernelIndyFFT_host(j,i) =  sqrt(2.0) * K_sg_ind * sin(y_host(jbeg+j)-y_c) * ds; 
-
     }
   }
 
@@ -575,13 +573,13 @@ void ComputeSgForces(DataBlock &data) {
 
   /* Fill sigma */
   idefix_for("FFT_loop", 0, n0, 0, n1, 0, n2fft,
-              KOKKOS_LAMBDA (int k, int j, int i) {
-                if (i<iend) {
-                  sigmaFFT(j,i) = Vc(RHO,k,j,i) ;
-                } else {
-                  sigmaFFT(j,i) = 0.0 ;
-                }
-              });
+            KOKKOS_LAMBDA (int k, int j, int i) {
+              if (i < n2) {
+                sigmaFFT(j,i) = Vc(RHO, k, j+jbeg, i+ibeg) ;
+              } else {
+                sigmaFFT(j,i) = 0.0 ;
+              }
+            });
 
 
   /* 2D Forward Transform */
@@ -655,6 +653,7 @@ void ComputeUserVars(DataBlock &data, UserDefVariablesContainer &variables) {
   // Sync it
   d.SyncFromDevice();
 
+  /* Self-gravity */
   IdefixArray3D<real> forceSGx = myGlobals->forceSGx;
   IdefixArray3D<real> forceSGy = myGlobals->forceSGy;
 
@@ -663,6 +662,16 @@ void ComputeUserVars(DataBlock &data, UserDefVariablesContainer &variables) {
 
   Kokkos::deep_copy(forceSGx_host, forceSGx);
   Kokkos::deep_copy(forceSGy_host, forceSGy);
+
+  /* Indirect term */
+  IdefixArray3D<real> forceIndx = myGlobals->forceIndx;
+  IdefixArray3D<real> forceIndy = myGlobals->forceIndy;
+
+  IdefixHostArray3D<real> forceIndx_host = variables["forceIndx"];
+  IdefixHostArray3D<real> forceIndy_host = variables["forceIndy"];
+
+  Kokkos::deep_copy(forceIndx_host, forceIndx);
+  Kokkos::deep_copy(forceIndy_host, forceIndy);
 
   /* Toomre parameter */
   IdefixHostArray3D<real> toomre_host = variables["toomre"];
