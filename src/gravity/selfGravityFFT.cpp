@@ -83,6 +83,11 @@ void SelfGravityFFT::CheckCompatibility() {
                    "conditions in all active dimensions.");
     }
   }
+  if(grid->nproc[KDIR] > 1) {
+    IDEFIX_ERROR("SelfGravityFFT currently requires no domain decomposition "
+                 "along X3: use a slab (-dec n 1 1) or pencil (-dec n m 1) "
+                 "decomposition.");
+  }
 }
 
 void SelfGravityFFT::ShowConfig() {
@@ -221,8 +226,8 @@ void SelfGravityFFT::SolvePoisson() {
           const int n = (2*gk <= nGlob[2]) ? gk : nGlob[2] - gk;
           k2 += (2.0*M_PI*n/Lx[2]) * (2.0*M_PI*n/Lx[2]);
         }
-        const real inv_k2 = (k2 > 0.0) ? -1.0/k2 : 0.0;
-        phiFLocal(k,j,i) = rhoFLocal(k,j,i) * inv_k2;
+        const real inv_k2 = (k2 > 0.0) ? 1.0/k2 : 0.0;
+        phiFLocal(k,j,i) = -rhoFLocal(k,j,i) * inv_k2;
       });
 
   fft->C2R(phiF, phiPacked);

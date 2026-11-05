@@ -23,4 +23,6 @@ target_sources(idefix
   PUBLIC ${CMAKE_CURRENT_LIST_DIR}/selfGravityIterative.cpp
   PUBLIC ${CMAKE_CURRENT_LIST_DIR}/selfGravityFFT.hpp
   PUBLIC ${CMAKE_CURRENT_LIST_DIR}/selfGravityFFT.cpp
+  PUBLIC ${CMAKE_CURRENT_LIST_DIR}/selfGravityShearingBox2D.hpp
+  PUBLIC ${CMAKE_CURRENT_LIST_DIR}/selfGravityShearingBox2D.cpp
   )
