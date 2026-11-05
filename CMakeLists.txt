@@ -47,9 +47,18 @@ if(Idefix_CUSTOM_EOS)
 endif()
 set(Idefix_RECONSTRUCTION "Linear" CACHE STRING "Type of cell reconstruction scheme")
 option(Idefix_HDF5 "Enable HDF5 I/O (requires HDF5 library)" OFF)
+option(Idefix_HEFFTE "Enable heFFTe spectral solvers for gravity (requires an MPI installation at build time)" OFF)
 if(Idefix_MHD)
   option(Idefix_EVOLVE_VECTOR_POTENTIAL "Evolve the vector potential instead of the field (helps reducing div(B) in long runs)" OFF)
 endif()
+if(Idefix_HEFFTE)
+  # heFFTe's CMake always does find_package(MPI REQUIRED), so an MPI
+  # installation must be available regardless of Idefix_MPI.
+  option(Heffte_ENABLE_FFTW "Enable FFTW backend" OFF)
+  option(Heffte_ENABLE_MKL "Enable MKL backend" OFF)
+  option(Heffte_ENABLE_AVX "Enable AVX in the stock backend" OFF)
+endif()
+
 set_property(CACHE Idefix_RECONSTRUCTION PROPERTY STRINGS Constant Linear LimO3 Parabolic)
 set(Idefix_PRECISION "Double" CACHE STRING "Precision of arithmetics")
 set_property(CACHE Idefix_PRECISION PROPERTY STRINGS Double Single)
@@ -81,6 +90,19 @@ endif()
 # Add kokkos CMAKE files (required early since these set compiler options)
 add_subdirectory(src/kokkos ${CMAKE_BINARY_DIR}/build/kokkos)
 include_directories(${Kokkos_INCLUDE_DIRS_RET})
+
+# Add HeFFTe CMAKE files
+if(Idefix_HEFFTE)
+  if(Kokkos_ENABLE_CUDA)
+    option(Heffte_ENABLE_CUDA "Enable cuFFT backend" ON) 
+  endif()
+  if(Kokkos_ENABLE_HIP)
+    option(Heffte_ENABLE_ROCM "Enable rocFFT backend" ON)
+  endif()
+  set(Heffte_ENABLE_DOXYGEN OFF)
+  set(BUILD_SHARED_LIBS OFF) 
+  add_subdirectory(src/heffte ${CMAKE_BINARY_DIR}/build/heffte)
+endif()
 
 # Add Idefix CXX Flags
 add_compile_options(${Idefix_CXX_FLAGS})
@@ -288,6 +310,11 @@ if (${Idefix_MPI_GPU_FORCE_COPY})
   add_compile_definitions("WITH_GPU_FORCE_COPY")
 endif()
 
+# HeFFTe library for gravity solvers
+if (Idefix_HEFFTE)
+  add_compile_definitions("WITH_HEFFTE")
+endif()
+
 target_include_directories(idefix PUBLIC
                            "${Idefix_PROBLEM_DIR_ABS}"
                            )
@@ -315,6 +342,7 @@ target_include_directories(idefix PUBLIC
                            )
 
 target_link_libraries(idefix Kokkos::kokkos)
+target_link_libraries(idefix Heffte)
 
 # Generate header with compiler information (name, flags, path)
 configure_file(
