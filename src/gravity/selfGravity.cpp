@@ -20,13 +20,21 @@
 #ifdef WITH_HEFFTE
 #include "selfGravityFFT.hpp"
 #include "selfGravityShearingBox2D.hpp"
+#include "selfGravityShearingBox3D.hpp"
 #endif
 
 std::unique_ptr<SelfGravity> SelfGravity::Create(Input &input, DataBlock *data) {
   std::string strSolver = input.GetOrSet<std::string>("SelfGravity","solver",0,"BICGSTAB");
 
   std::unique_ptr<SelfGravity> ptr;
-  if(strSolver == "FFTShearingBox2D") {
+  if(strSolver == "FFTShearingBox3D") {
+    #ifdef WITH_HEFFTE
+    ptr = std::make_unique<SelfGravityShearingBox3D>();
+    #else
+    IDEFIX_ERROR("[SelfGravity]: FFTShearingBox3D solver requested but "
+                 "Idefix was not compiled with heFFTe support (Idefix_HEFFTE).");
+    #endif
+  } else if(strSolver == "FFTShearingBox2D") {
     #ifdef WITH_HEFFTE
     ptr = std::make_unique<SelfGravityShearingBox2D>();
     #else
@@ -48,7 +56,8 @@ std::unique_ptr<SelfGravity> SelfGravity::Create(Input &input, DataBlock *data) 
     std::stringstream msg;
     msg << "SelfGravity: Unknown solver \"" << strSolver << "\". "
         << "Use \"Jacobi\", \"BICGSTAB\", \"PBICGSTAB\", \"CG\", \"PCG\", "
-        << "\"MINRES\", \"PMINRES\", \"FFT\" or \"FFTShearingBox2D\".";
+        << "\"MINRES\", \"PMINRES\", \"FFT\", \"FFTShearingBox2D\", "
+        << "\"FFTShearingBox3D\".";
     IDEFIX_ERROR(msg);
   }
   return ptr;
