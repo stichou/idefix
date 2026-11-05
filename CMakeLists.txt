@@ -94,13 +94,13 @@ include_directories(${Kokkos_INCLUDE_DIRS_RET})
 # Add HeFFTe CMAKE files
 if(Idefix_HEFFTE)
   if(Kokkos_ENABLE_CUDA)
-    option(Heffte_ENABLE_CUDA "Enable cuFFT backend" ON) 
+    option(Heffte_ENABLE_CUDA "Enable cuFFT backend" ON)
   endif()
   if(Kokkos_ENABLE_HIP)
     option(Heffte_ENABLE_ROCM "Enable rocFFT backend" ON)
   endif()
   set(Heffte_ENABLE_DOXYGEN OFF)
-  set(BUILD_SHARED_LIBS OFF) 
+  set(BUILD_SHARED_LIBS OFF)
   add_subdirectory(src/heffte ${CMAKE_BINARY_DIR}/build/heffte)
 endif()
 
@@ -337,6 +337,7 @@ target_include_directories(idefix PUBLIC
                            src/gravity
                            src/utils
                            src/utils/iterativesolver
+                           src/utils/spectral
                            src/mpi
                            src
                            )

@@ -17,12 +17,22 @@
 
 #include "selfGravity.hpp"
 #include "selfGravityIterative.hpp"
+#ifdef WITH_HEFFTE
+#include "selfGravityFFT.hpp"
+#endif
 
 std::unique_ptr<SelfGravity> SelfGravity::Create(Input &input, DataBlock *data) {
   std::string strSolver = input.GetOrSet<std::string>("SelfGravity","solver",0,"BICGSTAB");
 
   std::unique_ptr<SelfGravity> ptr;
-  if(strSolver == "Jacobi" || strSolver == "BICGSTAB" || strSolver == "PBICGSTAB"
+  if(strSolver == "FFT" || strSolver == "fft") {
+    #ifdef WITH_HEFFTE
+    ptr = std::make_unique<SelfGravityFFT>();
+    #else
+    IDEFIX_ERROR("[SelfGravity]: FFT solver requested but "
+                 "Idefix was not compiled with heFFTe support (Idefix_HEFFTE).");
+    #endif
+  } else if(strSolver == "Jacobi" || strSolver == "BICGSTAB" || strSolver == "PBICGSTAB"
      || strSolver == "CG" || strSolver == "PCG" || strSolver == "MINRES"
      || strSolver == "PMINRES") {
     ptr = std::make_unique<SelfGravityIterative>();
@@ -30,7 +40,7 @@ std::unique_ptr<SelfGravity> SelfGravity::Create(Input &input, DataBlock *data) 
     std::stringstream msg;
     msg << "SelfGravity: Unknown solver \"" << strSolver << "\". "
         << "Use \"Jacobi\", \"BICGSTAB\", \"PBICGSTAB\", \"CG\", \"PCG\", "
-        << "\"MINRES\" or \"PMINRES\".";
+        << "\"MINRES\", \"PMINRES\" or \"FFT\".";
     IDEFIX_ERROR(msg);
   }
   return ptr;
