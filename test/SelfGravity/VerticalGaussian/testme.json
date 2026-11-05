@@ -1,0 +1,15 @@
+{
+    "namings": "ini,mpi",
+    "default": {
+        "noplot": true,
+        "nonRegressionTest": false,
+        "dec": [2, 1, 1],
+        "tolerance": 0
+    },
+    "variants": [
+        {
+            "ini": ["idefix.ini", "idefix-centered.ini"],
+            "mpi": [false, true]
+        }
+    ]
+}
