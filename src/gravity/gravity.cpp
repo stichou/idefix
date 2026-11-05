@@ -106,7 +106,10 @@ Gravity::Gravity(Input &input, DataBlock *datain) {
 
   // Check SelfGravity object
   if(haveSelfGravityPotential) {
-    selfGravity.Init(input, this->data);
+    if(!haveInitialisedSelfGravity) {
+      selfGravity = SelfGravity::Create(input, this->data);
+    }
+    selfGravity->Init(input, this->data);
     haveInitialisedSelfGravity = true;
   }
 
@@ -133,7 +136,7 @@ void Gravity::ShowConfig() {
     }
     if(haveSelfGravityPotential) {
       idfx::cout << "Gravity: self-gravity ENABLED." << std::endl;
-      selfGravity.ShowConfig();
+      selfGravity->ShowConfig();
     }
     if(havePlanetsPotential) {
       idfx::cout << "Gravity: planet(s) potential ENABLED." << std::endl;
@@ -173,10 +176,10 @@ void Gravity::ComputeGravity(int stepNumber) {
     }
     if(haveSelfGravityPotential) {
       // Solving Poisson for the current gas density distribution
-      if(stepNumber % selfGravity.skipSelfGravity == 0) selfGravity.SolvePoisson();
+      if(stepNumber % selfGravity->skipSelfGravity == 0) selfGravity->SolvePoisson();
 
       // Adding gas self-gravity contribution to global gravity potential
-      selfGravity.AddSelfGravityPotential(phiP);
+      selfGravity->AddSelfGravityPotential(phiP);
     }
   }
   if(haveBodyForce) {
@@ -193,7 +196,6 @@ void Gravity::ComputeGravity(int stepNumber) {
   // For debug purpose
   #ifdef DEBUG_GRAVITY
     potTotFile.open("potTot.dat",std::ios::trunc);
-    this->selfGravity.WriteField(potTotFile,this->phiP);
     potTotFile.close();
   #endif
 

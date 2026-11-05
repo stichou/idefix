@@ -6,7 +6,7 @@
 // Last modified : 10/2023
 //
 // Copyright(C) by :
-// - Geoffroy Lesur <geoffroy.lesur@univ-grenoble-alpes.fr> (IPAG/UGA/CNRS - 2023)
+// - Geoffroy Lesur <geoffroy.lesur@univ-grenoble-alpes.fr> (IPAG/UGA/CNRS - 2021 - 2023)
 // and other code contributors
 //
 // Licensed under CeCILL 2.1 License, see COPYING for more information
@@ -21,8 +21,6 @@
 #include "idefix.hpp"
 #include "input.hpp"
 #include "grid.hpp"
-#include "fluid_defs.hpp"
-#include "iterativesolver.hpp"
 #include "laplacian.hpp"
 
 #ifdef WITH_MPI
@@ -36,44 +34,25 @@ class SelfGravity {
  public:
   enum GravitySolver {JACOBI, BICGSTAB, PBICGSTAB, PCG, CG, PMINRES, MINRES};
 
-  void Init(Input &, DataBlock *);  // Initialisation of the class attributes
-  void ShowConfig();                // display current configuration
-  void InitSolver(); // (Re)initialisation of the solver for a given density distribution
+  virtual ~SelfGravity() = default;
 
-  void SubstractMeanDensity();  // Compute and substract the average input density
+  virtual void Init(Input &, DataBlock *) = 0;  // Initialisation of the solver
+  virtual void ShowConfig() = 0;                // display current configuration
+  virtual void SolvePoisson() = 0;               // Solve Poisson equation
+  virtual void AddSelfGravityPotential(IdefixArray3D<real> &) = 0;
+  virtual void EnrollUserDefBoundary(Laplacian::UserDefBoundaryFunc myFunc) = 0;
 
-  void SolvePoisson(); // Solve Poisson equation
-  void AddSelfGravityPotential(IdefixArray3D<real> &);
-
-  void EnrollUserDefBoundary(Laplacian::UserDefBoundaryFunc myFunc);  // User-defined boundary
-
-  IterativeSolver<Laplacian> *iterativeSolver;
-
-  // The linear operator involved in Poisson equation
-  std::unique_ptr<Laplacian> laplacian;
+  static std::unique_ptr<SelfGravity> Create(Input &, DataBlock *);
 
   real currentError{0};       // last error of the iterative solver
   int nsteps{0};              // # of steps of the latest iteration
-  double elapsedTime;        // time spent solving self gravity
+  double elapsedTime{0.0};     // time spent solving self gravity
 
   // Whether we should skip self-gravity computation every n steps
   int skipSelfGravity{1};
 
- private:
-  DataBlock *data;  // My parent data object
-  IdefixArray3D<real> potential;  // Gravitational potential
-  IdefixArray3D<real> density;  // Density
-  real dt;  // CFL timestep
-
-  // Local potential array size
-  std::array<int,3> np_tot;
-
-  std::array<Laplacian::LaplacianBoundaryType,3> lbound;  // Boundary condition to the left
-  std::array<Laplacian::LaplacianBoundaryType,3> rbound;  // Boundary condition to the right
-
-  bool isPeriodic;
-  bool havePreconditioner{false};
-  GravitySolver solver; // The solver  used to solve Poisson
+ protected:
+  DataBlock *data{nullptr};  // My parent data object
 };
 
 #endif // GRAVITY_SELFGRAVITY_HPP_
