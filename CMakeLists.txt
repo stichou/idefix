@@ -342,7 +342,9 @@ target_include_directories(idefix PUBLIC
                            )
 
 target_link_libraries(idefix Kokkos::kokkos)
-target_link_libraries(idefix Heffte)
+if (Idefix_HEFFTE)
+  target_link_libraries(idefix Heffte)
+endif()
 
 # Generate header with compiler information (name, flags, path)
 configure_file(
@@ -371,6 +373,7 @@ message(STATUS "    Python: ${Idefix_PYTHON}")
 message(STATUS "    GPU direct: ${Idefix_MPI_GPU_DIRECT}")
 message(STATUS "    Reconstruction: ${Idefix_RECONSTRUCTION}")
 message(STATUS "    Precision: ${Idefix_PRECISION}")
+message(STATUS "    HeFFTe: ${Idefix_HEFFTE}")
 message(STATUS "    Version: ${Idefix_VERSION}")
 message(STATUS "    Problem directory: '${Idefix_PROBLEM_DIR}'")
 message(STATUS "    Problem definitions: '${Idefix_DEFS}'")
