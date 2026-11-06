@@ -21,6 +21,7 @@
 
 #include "selfGravity.hpp"
 #include "heffteFft.hpp"
+#include "shearRemap.hpp"
 
 #ifdef WITH_MPI
 #include "mpi.hpp"
@@ -39,6 +40,7 @@ class SelfGravityShearingBox2D final : public SelfGravity {
  private:
   void CheckCompatibility();
   void SetBoundaries(IdefixArray3D<real> &);
+  void EnforceShearingBoxPhi(real t, int dir, BoundarySide side, IdefixArray3D<real> &);
   void EnforcePeriodic(int dir, BoundarySide side, IdefixArray3D<real> &);
 
   std::unique_ptr<HeffteFft> fft;
@@ -46,6 +48,8 @@ class SelfGravityShearingBox2D final : public SelfGravity {
   // Packed local active arrays (no ghost cells), following the input box layout
   IdefixArray3D<real> rho;
   IdefixArray3D<real> phiPacked;
+  IdefixArray3D<real> remapScratch;  ///< work array for the shear remap
+  IdefixArray3D<real> ghostScratch;  ///< work array for the shear-periodic ghost fill
   // Potential with ghost cells
   IdefixArray3D<real> phi;
   // Local complex spectral coefficients, following the output box layout
@@ -60,6 +64,7 @@ class SelfGravityShearingBox2D final : public SelfGravity {
   real lambda{0.0};       ///< softening length of the razor-thin disc kernel
   real eta{1.0};          ///< vertical smoothing parameter of the Bessel kernel
   real scaleHeight{0.0};  ///< disc scale height H
+  real sbS{0.0};          ///< shear rate (from [Hydro] shearingBox)
 
   #ifdef WITH_MPI
   Mpi mpi;

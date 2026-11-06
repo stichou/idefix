@@ -21,6 +21,7 @@
 
 #include "selfGravity.hpp"
 #include "heffteFft.hpp"
+#include "shearRemap.hpp"
 
 #ifdef WITH_MPI
 #include "mpi.hpp"
@@ -38,6 +39,7 @@ class SelfGravityShearingBox3D final : public SelfGravity {
   void CheckCompatibility();
   void SetBoundaries(IdefixArray3D<real> &);
   void EnforcePeriodic(int dir, BoundarySide side, IdefixArray3D<real> &);
+  void EnforceShearingBoxPhi(real t, int dir, BoundarySide side, IdefixArray3D<real> &);
   void ExtrapolateVerticalGhost(IdefixArray3D<real> &);
 
   std::unique_ptr<HeffteFft> fft;
@@ -46,6 +48,8 @@ class SelfGravityShearingBox3D final : public SelfGravity {
   // The vertical direction is zero-padded by a factor of 4 (VGF-HybridBC).
   IdefixArray3D<real> rho;
   IdefixArray3D<real> phiPacked;
+  IdefixArray3D<real> remapScratch;  ///< work array for the shear remap
+  IdefixArray3D<real> ghostScratch;  ///< work array for the shear-periodic ghost fill
   // Potential with ghost cells
   IdefixArray3D<real> phi;
   // Local complex spectral coefficients, following the output box layout
@@ -58,6 +62,7 @@ class SelfGravityShearingBox3D final : public SelfGravity {
   std::array<int,3> outSize{1,1,1};     // local complex box, (i,j,k) order
 
   real alpha{1.1};  ///< enclosure parameter of the VGF closure relation
+  real sbS{0.0};    ///< shear rate (from [Hydro] shearingBox)
 
   #ifdef WITH_MPI
   Mpi mpi;

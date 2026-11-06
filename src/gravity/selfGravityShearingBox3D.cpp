@@ -45,6 +45,7 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
   idfx::pushRegion("SelfGravityShearingBox3D::Init");
   this->data = datain;
   Grid *grid = data->mygrid;
+  sbS = data->hydro->sbS;
   CheckCompatibility();
 
   // Work arrays on the active (ghost-free) local domain, vertically padded
@@ -57,6 +58,12 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
   phi = IdefixArray3D<real>("SGSB3D_Phi", data->np_tot[KDIR],
                                         data->np_tot[JDIR],
                                         data->np_tot[IDIR]);
+  remapScratch = IdefixArray3D<real>("SGSB3D_Remap", VGF_PADDING*data->np_int[KDIR],
+                                                 data->np_int[JDIR],
+                                                 data->np_int[IDIR]);
+  ghostScratch = IdefixArray3D<real>("SGSB3D_GhostScratch", data->np_tot[KDIR],
+                                               data->np_tot[JDIR],
+                                               2*data->nghost[IDIR]);
 
   // Global and local descriptions of the padded FFT domain (i,j,k order)
   worldSize = {grid->np_int[IDIR], grid->np_int[JDIR], grid->np_int[KDIR]};
@@ -98,10 +105,31 @@ void SelfGravityShearingBox3D::CheckCompatibility() {
                "(DIMENSIONS = 3).");
   #endif
   Grid *grid = data->mygrid;
-  for(int dir = IDIR; dir <= JDIR; dir++) {
-    if(grid->lbound[dir] != periodic || grid->rbound[dir] != periodic) {
-      IDEFIX_ERROR("SelfGravityShearingBox3D requires periodic boundary "
-                   "conditions in the shearing box plane (X1 and X2).");
+  if(!data->hydro->haveShearingBox) {
+    IDEFIX_ERROR("SelfGravityShearingBox3D requires the shearing box module: "
+                 "define [Hydro] shearingBox in the input file "
+                 "(use 0 for a non-shearing setup).");
+  }
+  if(sbS != 0.0) {
+    // A non-zero shear makes the problem shear-periodic in x
+    for(int dir = IDIR; dir <= JDIR; dir++) {
+      const bool lOk = (grid->lbound[dir] == periodic || grid->lbound[dir] == shearingbox);
+      const bool rOk = (grid->rbound[dir] == periodic || grid->rbound[dir] == shearingbox);
+      if(!lOk || !rOk) {
+        IDEFIX_ERROR("SelfGravityShearingBox3D requires periodic or shearing box "
+                     "boundary conditions in the shearing box plane (X1 and X2).");
+      }
+    }
+    if(grid->nproc[JDIR] > 1) {
+      IDEFIX_ERROR("SelfGravityShearingBox3D with a non-zero shear requires no domain "
+                   "decomposition along X2: use -dec n 1 1.");
+    }
+  } else {
+    for(int dir = IDIR; dir <= JDIR; dir++) {
+      if(grid->lbound[dir] != periodic || grid->rbound[dir] != periodic) {
+        IDEFIX_ERROR("SelfGravityShearingBox3D requires periodic boundary "
+                     "conditions in the shearing box plane (X1 and X2).");
+      }
     }
   }
   if(grid->lbound[KDIR] == periodic || grid->rbound[KDIR] == periodic) {
@@ -191,6 +219,52 @@ void SelfGravityShearingBox3D::ExtrapolateVerticalGhost(IdefixArray3D<real> &arr
   idfx::popRegion();
 }
 
+void SelfGravityShearingBox3D::EnforceShearingBoxPhi(real t, int dir, BoundarySide side,
+                                                      IdefixArray3D<real> &arr) {
+  idfx::pushRegion("SelfGravityShearingBox3D::EnforceShearingBoxPhi");
+  if(dir != IDIR) {
+    IDEFIX_ERROR("Shearing box boundaries can only be applied along the X1 direction");
+  }
+
+  IdefixArray3D<real> localVar = arr;
+
+  const int nxi = data->np_int[IDIR];
+  const int nxj = data->np_int[JDIR];
+  const int ighost = data->nghost[IDIR];
+  const int jghost = data->nghost[JDIR];
+
+  const int istart = side*(ighost+nxi);
+  const int iend = ighost + side*(ighost+nxi);
+
+  const real Lx = data->mygrid->xend[IDIR] - data->mygrid->xbeg[IDIR];
+  const real Ly = data->mygrid->xend[JDIR] - data->mygrid->xbeg[JDIR];
+  const real dy = Ly/nxj;
+
+  // Offset of the shear-periodic boundary, following the hydro Boundary module
+  const int sign = 2*side-1;
+  const real dL = ShearRemap::PositiveMod(sign*sbS*Lx*t, Ly);
+
+  IdefixArray3D<real> scratch = ghostScratch;
+  idefix_for("SGSB3D_ShearingBoxPhiCopy", 0, data->np_tot[KDIR], 0, data->np_tot[JDIR],
+                                            0, ighost,
+      KOKKOS_LAMBDA (int k, int j, int q) {
+        scratch(k,j,q) = localVar(k,j,istart+q);
+      });
+  idefix_for("SGSB3D_ShearingBoxPhi", 0, data->np_tot[KDIR], 0, data->np_tot[JDIR],
+                                           istart, iend,
+      KOKKOS_LAMBDA (int k, int j, int i) {
+        // sample the periodic-filled neighbour state at y_j - dL
+        const real pos = j - dL/dy;
+        const int j0 = static_cast<int>(Kokkos::floor(pos));
+        const real frac = pos - j0;
+        const int ja = jghost + (((j0 - jghost) % nxj + nxj) % nxj);
+        const int jb = jghost + (((j0+1 - jghost) % nxj + nxj) % nxj);
+        const int q = i - istart;
+        localVar(k,j,i) = (1.0-frac)*scratch(k,ja,q) + frac*scratch(k,jb,q);
+      });
+  idfx::popRegion();
+}
+
 void SelfGravityShearingBox3D::SetBoundaries(IdefixArray3D<real> &arr) {
   idfx::pushRegion("SelfGravityShearingBox3D::SetBoundaries");
 
@@ -200,6 +274,8 @@ void SelfGravityShearingBox3D::SetBoundaries(IdefixArray3D<real> &arr) {
                                                     data->np_tot[IDIR]);
   #endif
 
+  const real t = data->t;
+  const bool haveShear = (sbS != 0.0);
   for(int dir = IDIR; dir <= JDIR; dir++) {
     #ifdef WITH_MPI
     if(data->mygrid->nproc[dir]>1) {
@@ -214,8 +290,20 @@ void SelfGravityShearingBox3D::SetBoundaries(IdefixArray3D<real> &arr) {
     }
     #endif
 
-    EnforcePeriodic(dir, left, arr);
-    EnforcePeriodic(dir, right, arr);
+    if(dir == IDIR && haveShear) {
+      // Periodicity (or MPI exchange) first, then the shear offset.
+      // The shear-periodic condition only applies at the domain edges:
+      // internal MPI boundaries are continuous and must not be shifted.
+      if(data->mygrid->nproc[dir] == 1) {
+        EnforcePeriodic(dir, left, arr);
+        EnforcePeriodic(dir, right, arr);
+      }
+      if(data->lbound[IDIR] != internal) EnforceShearingBoxPhi(t, dir, left, arr);
+      if(data->rbound[IDIR] != internal) EnforceShearingBoxPhi(t, dir, right, arr);
+    } else {
+      EnforcePeriodic(dir, left, arr);
+      EnforcePeriodic(dir, right, arr);
+    }
   }
 
   ExtrapolateVerticalGhost(arr);
@@ -245,7 +333,29 @@ void SelfGravityShearingBox3D::SolvePoisson() {
       rhoLocal(k, j - jbeg, i - ibeg) = (k < nk) ? Vc(RHO, k + kbeg, j, i) : 0.0;
     });
 
-  fft->R2C(rho, rhoF);
+  // Forward shear remap: map the density to the fully periodic frame
+  // (each x-column is shifted along y by -S x t)
+  IdefixArray3D<real> fftInput = rho;
+  if(sbS != 0.0) {
+    const real Ly = grid->xend[JDIR]-grid->xbeg[JDIR];
+    const real dy = Ly/grid->np_int[JDIR];
+    const int iOffset = data->gbeg[IDIR];  // grid->x is ghost-padded
+    ShearRemap::ShiftAlongJ("SGSB3D_RemapFwd", rho, remapScratch, grid->x[IDIR],
+                            +1.0, sbS, data->t, Ly, dy, iOffset,
+                            VGF_PADDING*data->np_int[KDIR], data->np_int[JDIR],
+                            data->np_int[IDIR]);
+    fftInput = remapScratch;
+  }
+
+  fft->R2C(fftInput, rhoF);
+
+  // Effective in-plane wavevector: kx -> kx + (Delta_y0 / Lx) ky,
+  // with Delta_y0 = mod(S Lx t, Ly) (eq. 3 of Rendon Restrepo & Gressel 2026)
+  const real ddy = (sbS != 0.0)
+                   ? ShearRemap::PositiveMod(sbS*(grid->xend[IDIR]-grid->xbeg[IDIR])*data->t,
+                                             grid->xend[JDIR]-grid->xbeg[JDIR])
+                     /(grid->xend[IDIR]-grid->xbeg[IDIR])
+                   : 0.0;
 
   // Apply the VGF-HybridBC Green's function in Fourier space
   // (eq. 14 of Rendon Restrepo & Gressel 2026), with L = alpha Lz:
@@ -272,9 +382,9 @@ void SelfGravityShearingBox3D::SolvePoisson() {
         const int gk = low[2] + k;
         // In-plane wave numbers (periodic dimensions)
         const int ni = (2*gi <= nGlob[0]) ? gi : nGlob[0] - gi;
-        const int nj = (2*gj <= nGlob[1]) ? gj : nGlob[1] - gj;
-        const real kx = TWO_PI*ni/Lx[0];
-        const real ky = TWO_PI*nj/Lx[1];
+        const int njs = (2*gj <= nGlob[1]) ? gj : gj - nGlob[1];
+        const real ky = TWO_PI*njs/Lx[1];
+        const real kx = TWO_PI*ni/Lx[0] - ddy*ky;
         const real k2d = kx*kx + ky*ky;
         // Vertical wave number of the padded domain
         const int nkp = (2*gk <= nGlob[2]) ? gk : nGlob[2] - gk;
@@ -294,8 +404,21 @@ void SelfGravityShearingBox3D::SolvePoisson() {
 
   fft->C2R(phiF, phiPacked);
 
+  // Inverse shear remap: map the potential back to the shearing frame
+  IdefixArray3D<real> fftOutput = phiPacked;
+  if(sbS != 0.0) {
+    const real Ly = grid->xend[JDIR]-grid->xbeg[JDIR];
+    const real dy = Ly/grid->np_int[JDIR];
+    const int iOffset = data->gbeg[IDIR];  // grid->x is ghost-padded
+    ShearRemap::ShiftAlongJ("SGSB3D_RemapBwd", phiPacked, remapScratch, grid->x[IDIR],
+                            -1.0, sbS, data->t, Ly, dy, iOffset,
+                            VGF_PADDING*data->np_int[KDIR], data->np_int[JDIR],
+                            data->np_int[IDIR]);
+    fftOutput = remapScratch;
+  }
+
   // Unpack the potential (first quarter of the padded box) and fill the ghosts
-  IdefixArray3D<real> phiPackedLocal = phiPacked;
+  IdefixArray3D<real> phiPackedLocal = fftOutput;
   IdefixArray3D<real> phiLocal = phi;
   const int ibegPhi = data->beg[IDIR];
   const int jbegPhi = data->beg[JDIR];
