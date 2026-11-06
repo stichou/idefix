@@ -37,11 +37,12 @@ class SelfGravityShearingBox2D final : public SelfGravity {
   void AddSelfGravityPotential(IdefixArray3D<real> &) override;
   void EnrollUserDefBoundary(Laplacian::UserDefBoundaryFunc myFunc) override;
 
+  void EnforceShearingBoxPhi(real t, int dir, BoundarySide side, IdefixArray3D<real> &);
+  void EnforcePeriodic(int dir, BoundarySide side, IdefixArray3D<real> &);
+
  private:
   void CheckCompatibility();
   void SetBoundaries(IdefixArray3D<real> &);
-  void EnforceShearingBoxPhi(real t, int dir, BoundarySide side, IdefixArray3D<real> &);
-  void EnforcePeriodic(int dir, BoundarySide side, IdefixArray3D<real> &);
 
   std::unique_ptr<HeffteFft> fft;
 
