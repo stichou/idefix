@@ -202,30 +202,34 @@ void SelfGravityFFT::SolvePoisson() {
   // Inverse Poisson equation in Fourier space: phiHat = -rhoHat / k^2
   IdefixArray3D<complex> rhoFLocal = rhoF;
   IdefixArray3D<complex> phiFLocal = phiF;
-  const std::array<int,3> low = outLow;
   const std::array<int,3> nloc = outSize;
-  const std::array<int,3> nGlob = worldSize;
-  const std::array<real,3> Lx = {grid->xend[IDIR]-grid->xbeg[IDIR],
-                                  grid->xend[JDIR]-grid->xbeg[JDIR],
-                                  grid->xend[KDIR]-grid->xbeg[KDIR]};
+  const int low0 = outLow[0];
+  const int low1 = outLow[1];
+  const int low2 = outLow[2];
+  const int nGlob0 = worldSize[0];
+  const int nGlob1 = worldSize[1];
+  const int nGlob2 = worldSize[2];
+  const real Lx0 = grid->xend[IDIR]-grid->xbeg[IDIR];
+  const real Lx1 = grid->xend[JDIR]-grid->xbeg[JDIR];
+  const real Lx2 = grid->xend[KDIR]-grid->xbeg[KDIR];
   idefix_for("SGFFT_PoissonFFT", 0, nloc[2], 0, nloc[1], 0, nloc[0],
       KOKKOS_LAMBDA(int k, int j, int i) {
-        const int gi = low[0] + i;
-        const int gj = low[1] + j;
-        const int gk = low[2] + k;
+        const int gi = low0 + i;
+        const int gj = low1 + j;
+        const int gk = low2 + k;
         real k2 = 0.0;
         // Global mode number along each direction, inactive directions carry k=0
-        if(nGlob[0] > 1) {
-          const int n = (2*gi <= nGlob[0]) ? gi : nGlob[0] - gi;
-          k2 += (2.0*M_PI*n/Lx[0]) * (2.0*M_PI*n/Lx[0]);
+        if(nGlob0 > 1) {
+          const int n = (2*gi <= nGlob0) ? gi : nGlob0 - gi;
+          k2 += (2.0*M_PI*n/Lx0) * (2.0*M_PI*n/Lx0);
         }
-        if(nGlob[1] > 1) {
-          const int n = (2*gj <= nGlob[1]) ? gj : nGlob[1] - gj;
-          k2 += (2.0*M_PI*n/Lx[1]) * (2.0*M_PI*n/Lx[1]);
+        if(nGlob1 > 1) {
+          const int n = (2*gj <= nGlob1) ? gj : nGlob1 - gj;
+          k2 += (2.0*M_PI*n/Lx1) * (2.0*M_PI*n/Lx1);
         }
-        if(nGlob[2] > 1) {
-          const int n = (2*gk <= nGlob[2]) ? gk : nGlob[2] - gk;
-          k2 += (2.0*M_PI*n/Lx[2]) * (2.0*M_PI*n/Lx[2]);
+        if(nGlob2 > 1) {
+          const int n = (2*gk <= nGlob2) ? gk : nGlob2 - gk;
+          k2 += (2.0*M_PI*n/Lx2) * (2.0*M_PI*n/Lx2);
         }
         const real inv_k2 = (k2 > 0.0) ? 1.0/k2 : 0.0;
         phiFLocal(k,j,i) = -rhoFLocal(k,j,i) * inv_k2;

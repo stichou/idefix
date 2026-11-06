@@ -365,30 +365,34 @@ void SelfGravityShearingBox3D::SolvePoisson() {
   // and phiHat = 4 pi G_cst * G * rhoHat
   IdefixArray3D<complex> rhoFLocal = rhoF;
   IdefixArray3D<complex> phiFLocal = phiF;
-  const std::array<int,3> low = outLow;
   const std::array<int,3> nloc = outSize;
-  const std::array<int,3> nGlob = worldSizePad;
-  const std::array<real,3> Lx = {grid->xend[IDIR]-grid->xbeg[IDIR],
-                                  grid->xend[JDIR]-grid->xbeg[JDIR],
-                                  grid->xend[KDIR]-grid->xbeg[KDIR]};
+  const int low0 = outLow[0];
+  const int low1 = outLow[1];
+  const int low2 = outLow[2];
+  const int nGlob0 = worldSizePad[0];
+  const int nGlob1 = worldSizePad[1];
+  const int nGlob2 = worldSizePad[2];
+  const real Lx0 = grid->xend[IDIR]-grid->xbeg[IDIR];
+  const real Lx1 = grid->xend[JDIR]-grid->xbeg[JDIR];
+  const real Lx2 = grid->xend[KDIR]-grid->xbeg[KDIR];
   const real gravCst = data->gravity->gravCst;
-  const real L = this->alpha * Lx[KDIR];
+  const real L = this->alpha * Lx2;
   const real TWO_PI = 2.0*M_PI;
   const real PI4G = 4.0*M_PI*gravCst;
   idefix_for("SGSB3D_KernelFFT", 0, nloc[2], 0, nloc[1], 0, nloc[0],
       KOKKOS_LAMBDA(int k, int j, int i) {
-        const int gi = low[0] + i;
-        const int gj = low[1] + j;
-        const int gk = low[2] + k;
+        const int gi = low0 + i;
+        const int gj = low1 + j;
+        const int gk = low2 + k;
         // In-plane wave numbers (periodic dimensions)
-        const int ni = (2*gi <= nGlob[0]) ? gi : nGlob[0] - gi;
-        const int njs = (2*gj <= nGlob[1]) ? gj : gj - nGlob[1];
-        const real ky = TWO_PI*njs/Lx[1];
-        const real kx = TWO_PI*ni/Lx[0] - ddy*ky;
+        const int ni = (2*gi <= nGlob0) ? gi : nGlob0 - gi;
+        const int njs = (2*gj <= nGlob1) ? gj : gj - nGlob1;
+        const real ky = TWO_PI*njs/Lx1;
+        const real kx = TWO_PI*ni/Lx0 - ddy*ky;
         const real k2d = kx*kx + ky*ky;
         // Vertical wave number of the padded domain
-        const int nkp = (2*gk <= nGlob[2]) ? gk : nGlob[2] - gk;
-        const real kz = TWO_PI*nkp/(VGF_PADDING*Lx[2]);
+        const int nkp = (2*gk <= nGlob2) ? gk : nGlob2 - gk;
+        const real kz = TWO_PI*nkp/(VGF_PADDING*Lx2);
 
         real Gk = 0.0;
         if(k2d == 0.0 && kz == 0.0) {

@@ -367,12 +367,13 @@ void SelfGravityShearingBox2D::SolvePoisson() {
   //   Bessel potential: phiHat = -2 pi G exp((eta k H)^2) erfc(eta k H) rhoHat / k
   IdefixArray3D<complex> rhoFLocal = rhoF;
   IdefixArray3D<complex> phiFLocal = phiF;
-  const std::array<int,3> low = outLow;
   const std::array<int,3> nloc = outSize;
-  const std::array<int,3> nGlob = worldSize;
-  const std::array<real,3> Lx = {grid->xend[IDIR]-grid->xbeg[IDIR],
-                                  grid->xend[JDIR]-grid->xbeg[JDIR],
-                                  grid->xend[KDIR]-grid->xbeg[KDIR]};
+  const int low0 = outLow[0];
+  const int low1 = outLow[1];
+  const int nGlob0 = worldSize[0];
+  const int nGlob1 = worldSize[1];
+  const real Lx0 = grid->xend[IDIR]-grid->xbeg[IDIR];
+  const real Lx1 = grid->xend[JDIR]-grid->xbeg[JDIR];
   const real gravCst = data->gravity->gravCst;
   const real lambdaLoc = this->lambda;
   const real etaLoc = this->eta;
@@ -381,19 +382,19 @@ void SelfGravityShearingBox2D::SolvePoisson() {
   const real TWO_PI = 2.0*M_PI;
   idefix_for("SGSB2D_KernelFFT", 0, nloc[2], 0, nloc[1], 0, nloc[0],
       KOKKOS_LAMBDA(int k, int j, int i) {
-        const int gi = low[0] + i;
-        const int gj = low[1] + j;
+        const int gi = low0 + i;
+        const int gj = low1 + j;
         real kx = 0.0;
         real ky = 0.0;
         // Global mode number along each direction, inactive directions carry k=0
-        if(nGlob[0] > 1) {
-          const int n = (2*gi <= nGlob[0]) ? gi : nGlob[0] - gi;
-          kx = TWO_PI*n/Lx[0];
+        if(nGlob0 > 1) {
+          const int n = (2*gi <= nGlob0) ? gi : nGlob0 - gi;
+          kx = TWO_PI*n/Lx0;
         }
-        if(nGlob[1] > 1) {
+        if(nGlob1 > 1) {
           // signed y mode number: the ddy correction is odd in ky
-          const int n = (2*gj <= nGlob[1]) ? gj : gj - nGlob[1];
-          ky = TWO_PI*n/Lx[1];
+          const int n = (2*gj <= nGlob1) ? gj : gj - nGlob1;
+          ky = TWO_PI*n/Lx1;
         }
         const real kxeff = kx - ddy*ky;
         const real k2 = kxeff*kxeff + ky*ky;
