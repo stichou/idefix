@@ -36,9 +36,18 @@ class HeffteFft {
   // worldSize/localSize/localOffset are in (i,j,k) order (i = fastest dimension),
   // describing the global active grid and this rank's position in it,
   // as dictated by the runtime domain decomposition (-dec).
+  // r2cDirection selects the dimension (0=i/x, 1=j/y, 2=k/z) along which the
+  // real-to-complex transform is performed. heFFTe always transforms the r2c
+  // direction first, so this also fixes the transform order (the complex
+  // spectrum is halved along r2cDirection). The default (0) keeps the
+  // historical x-first behaviour. With r2cDirection = 2, the complex output
+  // is distributed in x-pencils (split along j and k only) so that the final
+  // reshape of heFFTe's plan is skipped when the last transformed direction
+  // is x.
   HeffteFft(std::array<int,3> worldSize,
             std::array<int,3> localSize,
-            std::array<int,3> localOffset);
+            std::array<int,3> localOffset,
+            int r2cDirection = 0);
 
   // in/out must be contiguous rank-3 arrays matching the real input box
   // (localSize) and the complex output box (getOutbox()), respectively.
@@ -48,7 +57,7 @@ class HeffteFft {
   // Local box in the (i,j,k)-ordered global complex world grid
   std::array<int,3> getOutboxLow() const;
   std::array<int,3> getOutboxSize() const;
-  // Global complex world size (i,j,k), first dimension reduced to floor(n/2)+1
+  // Global complex world size (i,j,k), r2cDirection reduced to floor(n/2)+1
   std::array<int,3> getWorldSizeCplx() const;
 
  private:

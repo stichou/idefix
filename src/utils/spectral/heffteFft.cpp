@@ -42,14 +42,14 @@ static_assert(sizeof(complex) == sizeof(std::complex<real>),
 
 HeffteFft::HeffteFft(std::array<int,3> worldSize,
                      std::array<int,3> localSize,
-                     std::array<int,3> localOffset) {
+                     std::array<int,3> localOffset,
+                     int r2cDirection) {
   idfx::pushRegion("HeffteFft::HeffteFft");
 #ifndef WITH_MPI
   static bool mpiInitialized [[maybe_unused]] = InitMpiOnce();
 #endif
 
   const heffte::box3d<> realWorld({0, 0, 0}, {worldSize[0]-1, worldSize[1]-1, worldSize[2]-1});
-  const int r2cDirection = 0;
   const heffte::box3d<> cplxWorld = realWorld.r2c(r2cDirection);
 
   const heffte::box3d<> inbox({localOffset[0], localOffset[1], localOffset[2]},
@@ -59,7 +59,21 @@ HeffteFft::HeffteFft(std::array<int,3> worldSize,
 
   // The Fourier-space distribution is chosen by heFFTe for the complex world box,
   // independently of the input decomposition dictated by -dec.
-  const std::array<int,3> outProcGrid = heffte::proc_setup_min_surface(cplxWorld, idfx::psize);
+  std::array<int,3> outProcGrid;
+  if(r2cDirection == 2) {
+    // x-pencils: split along (j,k) only, so that each rank owns the full x
+    // extent of the complex world. heFFTe's plan then ends the forward
+    // transform with the x-FFT on exactly this pencil distribution, which
+    // allows the final reshape to be skipped.
+    int py = 1;
+    for(int p = 1; p*p <= idfx::psize; p++) {
+      if(idfx::psize % p == 0) py = p;
+    }
+    py = idfx::psize / py;
+    outProcGrid = {1, py, idfx::psize/py};
+  } else {
+    outProcGrid = heffte::proc_setup_min_surface(cplxWorld, idfx::psize);
+  }
   const std::vector<heffte::box3d<>> outboxes = heffte::split_world(cplxWorld, outProcGrid);
   const heffte::box3d<> &localOutbox = outboxes[idfx::prank];
   outLow = {localOutbox.low[0], localOutbox.low[1], localOutbox.low[2]};

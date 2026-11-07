@@ -75,7 +75,12 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
                                    data->gbeg[JDIR] - data->nghost[JDIR],
                                    0};
 
-  fft = std::make_unique<HeffteFft>(worldSizePad, localSize, localOffset);
+  // r2c along z: heFFTe transforms the r2c direction first, so the FFT runs
+  // z -> y -> x. With the x/y directions already local (recommended -dec), the
+  // z and y transforms are transpose-free and the complex output is
+  // distributed in x-pencils, leaving a single reshape per transform (the
+  // x-pencil gather). The complex spectrum is halved along z.
+  fft = std::make_unique<HeffteFft>(worldSizePad, localSize, localOffset, 2);
 
   outLow = fft->getOutboxLow();
   outSize = fft->getOutboxSize();
@@ -371,7 +376,6 @@ void SelfGravityShearingBox3D::SolvePoisson() {
   const int low2 = outLow[2];
   const int nGlob0 = worldSizePad[0];
   const int nGlob1 = worldSizePad[1];
-  const int nGlob2 = worldSizePad[2];
   const real Lx0 = grid->xend[IDIR]-grid->xbeg[IDIR];
   const real Lx1 = grid->xend[JDIR]-grid->xbeg[JDIR];
   const real Lx2 = grid->xend[KDIR]-grid->xbeg[KDIR];
@@ -384,15 +388,19 @@ void SelfGravityShearingBox3D::SolvePoisson() {
         const int gi = low0 + i;
         const int gj = low1 + j;
         const int gk = low2 + k;
-        // In-plane wave numbers (periodic dimensions)
-        const int ni = (2*gi <= nGlob0) ? gi : nGlob0 - gi;
+        // In-plane wave numbers (periodic dimensions). The x spectrum is full:
+        // use signed mode numbers so that the ddy shear shift is applied to
+        // both signs of kx.
+        const int ni = (2*gi <= nGlob0) ? gi : gi - nGlob0;
         const int njs = (2*gj <= nGlob1) ? gj : gj - nGlob1;
         const real ky = TWO_PI*njs/Lx1;
         const real kx = TWO_PI*ni/Lx0 - ddy*ky;
         const real k2d = kx*kx + ky*ky;
-        // Vertical wave number of the padded domain
-        const int nkp = (2*gk <= nGlob2) ? gk : nGlob2 - gk;
-        const real kz = TWO_PI*nkp/(VGF_PADDING*Lx2);
+        // Vertical wave number of the padded domain. The z spectrum is halved
+        // (r2c along z): gk spans the non-negative modes only, and the
+        // negative modes are reconstructed by the c2r via Hermitian symmetry
+        // (the Green's function is even in kz).
+        const real kz = TWO_PI*gk/(VGF_PADDING*Lx2);
 
         real Gk = 0.0;
         if(k2d == 0.0 && kz == 0.0) {
