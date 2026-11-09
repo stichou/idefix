@@ -45,8 +45,17 @@ class SelfGravityShearingBox3D final : public SelfGravity {
 
   std::unique_ptr<HeffteFft> fft;
 
+  // Vertical zero-padding factor of the FFT grid. With the spectral kernel
+  // (eq. 14 sampled on the padded kz grid) the VGF-HybridBC method requires
+  // quadrupling (4). With the analytic kernel (closed-form real-space Green's
+  // function, compactly supported in |z| < alpha*Lz), the cyclic convolution
+  // on the doubled grid (2) is exact, since only lags |z| <= Lz-dz occur.
+  int vgfPadding{4};
+  bool useAnalyticKernel{false};
+
   // Packed local active arrays (no ghost cells) following the input box layout.
-  // The vertical direction is zero-padded by a factor of 4 (VGF-HybridBC).
+  // The vertical direction is zero-padded by a factor vgfPadding (x4 for the
+  // spectral kernel, x2 for the analytic kernel).
   IdefixArray3D<real> rho;
   IdefixArray3D<real> phiPacked;
   IdefixArray3D<real> remapScratch;  ///< work array for the shear remap
@@ -58,7 +67,7 @@ class SelfGravityShearingBox3D final : public SelfGravity {
   IdefixArray3D<complex> phiF;
 
   std::array<int,3> worldSize{1,1,1};   // global active sizes, (i,j,k) order
-  std::array<int,3> worldSizePad{1,1,1};  // global FFT sizes (z quadrupled)
+  std::array<int,3> worldSizePad{1,1,1};  // global FFT sizes (z padded)
   std::array<int,3> outLow{0,0,0};      // local complex box, (i,j,k) order
   std::array<int,3> outSize{1,1,1};     // local complex box, (i,j,k) order
 

@@ -35,11 +35,16 @@
 #include "grid.hpp"
 
 namespace {
-// Vertical zero-padding factor required by the VGF-HybridBC method:
-// the oscillatory nature of the Green's function and the aperiodic
-// convolution in z demand quadrupling the vertical domain.
-constexpr int VGF_PADDING = 4;
-}
+// Vertical zero-padding factor required by the VGF-HybridBC method when the
+// Green's function is applied spectrally (eq. 14 sampled on the padded kz
+// grid): the oscillatory nature of the kernel and the aperiodic convolution
+// in z demand quadrupling the vertical domain.
+constexpr int VGF_PADDING_SPECTRAL = 4;
+// Padding of the analytic-kernel variant: the closed-form real-space Green's
+// function is compactly supported in |z| < alpha*Lz, and only lags
+// |z| <= Lz-dz occur in the convolution, so the doubled grid is exact.
+constexpr int VGF_PADDING_ANALYTIC = 2;
+}  // namespace
 
 void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
   idfx::pushRegion("SelfGravityShearingBox3D::Init");
@@ -48,17 +53,41 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
   sbS = data->hydro->sbS;
   CheckCompatibility();
 
+  // Two equivalent formulations of the VGF-HybridBC Green's function:
+  // - "spectral": eq. 14 of Rendon Restrepo & Gressel 2026, sampled at the
+  //   discrete kz modes of the quadrupled grid (historical behaviour).
+  // - "analytic": the closed-form real-space kernel
+  //     g_k(z) = -exp(-k|z|)/(2k) for |z| < L, 0 otherwise   (k > 0)
+  //     g_0(z) = |z|/2 for |z| < L, 0 otherwise
+  //   whose continuum Fourier transform is exactly eq. 14. Being compactly
+  //   supported in |z| < L = alpha*Lz, it is applied on the doubled grid
+  //   through its exact z-DFT (closed form, see SolvePoisson), which halves
+  //   the FFT volume and the memory footprint of the solver.
+  std::string strKernel = input.GetOrSet<std::string>("SelfGravity","kernel",0,"spectral");
+  if(strKernel == "spectral") {
+    useAnalyticKernel = false;
+    vgfPadding = VGF_PADDING_SPECTRAL;
+  } else if(strKernel == "analytic") {
+    useAnalyticKernel = true;
+    vgfPadding = VGF_PADDING_ANALYTIC;
+  } else {
+    std::stringstream msg;
+    msg << "SelfGravityShearingBox3D: unknown [SelfGravity] kernel \"" << strKernel
+        << "\". Use \"spectral\" or \"analytic\".";
+    IDEFIX_ERROR(msg);
+  }
+
   // Work arrays on the active (ghost-free) local domain, vertically padded
-  rho = IdefixArray3D<real>("SGSB3D_Density", VGF_PADDING*data->np_int[KDIR],
+  rho = IdefixArray3D<real>("SGSB3D_Density", vgfPadding*data->np_int[KDIR],
                                             data->np_int[JDIR],
                                             data->np_int[IDIR]);
-  phiPacked = IdefixArray3D<real>("SGSB3D_Potential", VGF_PADDING*data->np_int[KDIR],
+  phiPacked = IdefixArray3D<real>("SGSB3D_Potential", vgfPadding*data->np_int[KDIR],
                                                  data->np_int[JDIR],
                                                  data->np_int[IDIR]);
   phi = IdefixArray3D<real>("SGSB3D_Phi", data->np_tot[KDIR],
                                         data->np_tot[JDIR],
                                         data->np_tot[IDIR]);
-  remapScratch = IdefixArray3D<real>("SGSB3D_Remap", VGF_PADDING*data->np_int[KDIR],
+  remapScratch = IdefixArray3D<real>("SGSB3D_Remap", vgfPadding*data->np_int[KDIR],
                                                  data->np_int[JDIR],
                                                  data->np_int[IDIR]);
   ghostScratch = IdefixArray3D<real>("SGSB3D_GhostScratch", data->np_tot[KDIR],
@@ -68,9 +97,9 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
   // Global and local descriptions of the padded FFT domain (i,j,k order)
   worldSize = {grid->np_int[IDIR], grid->np_int[JDIR], grid->np_int[KDIR]};
   worldSizePad = {grid->np_int[IDIR], grid->np_int[JDIR],
-                  VGF_PADDING*grid->np_int[KDIR]};
+                  vgfPadding*grid->np_int[KDIR]};
   std::array<int,3> localSize = {data->np_int[IDIR], data->np_int[JDIR],
-                                  VGF_PADDING*data->np_int[KDIR]};
+                                  vgfPadding*data->np_int[KDIR]};
   std::array<int,3> localOffset = {data->gbeg[IDIR] - data->nghost[IDIR],
                                    data->gbeg[JDIR] - data->nghost[JDIR],
                                    0};
@@ -152,7 +181,8 @@ void SelfGravityShearingBox3D::CheckCompatibility() {
 void SelfGravityShearingBox3D::ShowConfig() {
   idfx::cout << "SelfGravityShearingBox3D: Using the VGF-HybridBC spectral solver "
              << "(vacuum vertical BCs, vertical padding x"
-             << VGF_PADDING << ", alpha = " << alpha << ")." << std::endl;
+             << vgfPadding << ", alpha = " << alpha << ", kernel = "
+             << (useAnalyticKernel ? "analytic" : "spectral") << ")." << std::endl;
   if(skipSelfGravity > 1) {
     idfx::cout << "SelfGravityShearingBox3D: self-gravity field will be updated every "
                << skipSelfGravity << " cycles." << std::endl;
@@ -323,14 +353,14 @@ void SelfGravityShearingBox3D::SolvePoisson() {
 
   Grid *grid = data->mygrid;
 
-  // Pack the active density into the first quarter of the padded input box
+  // Pack the active density into the lower (active) part of the padded input box
   IdefixArray4D<real> Vc = data->hydro->Vc;
   IdefixArray3D<real> rhoLocal = rho;
   const int ibeg = data->beg[IDIR];
   const int jbeg = data->beg[JDIR];
   const int kbeg = data->beg[KDIR];
   const int nk = data->np_int[KDIR];
-  const int nkPad = VGF_PADDING*nk;
+  const int nkPad = vgfPadding*nk;
   idefix_for("SGSB3D_PackRho", 0, nkPad,
                               data->beg[JDIR], data->end[JDIR],
                               data->beg[IDIR], data->end[IDIR],
@@ -347,7 +377,7 @@ void SelfGravityShearingBox3D::SolvePoisson() {
     const int iOffset = data->gbeg[IDIR];  // grid->x is ghost-padded
     ShearRemap::ShiftAlongJ("SGSB3D_RemapFwd", rho, remapScratch, grid->x[IDIR],
                             +1.0, sbS, data->t, Ly, dy, iOffset,
-                            VGF_PADDING*data->np_int[KDIR], data->np_int[JDIR],
+                            vgfPadding*data->np_int[KDIR], data->np_int[JDIR],
                             data->np_int[IDIR]);
     fftInput = remapScratch;
   }
@@ -383,6 +413,55 @@ void SelfGravityShearingBox3D::SolvePoisson() {
   const real L = this->alpha * Lx2;
   const real TWO_PI = 2.0*M_PI;
   const real PI4G = 4.0*M_PI*gravCst;
+  if(useAnalyticKernel) {
+    // Analytic kernel (doubled grid): apply the exact z-DFT of the sampled
+    // real-space Green's function, symmetrically packed on the padded grid,
+    //   k2[q] = dz*g_k(q*dz)  for q = 0..Nz-1,  k2[2Nz-q] = k2[q],
+    // whose cyclic convolution with the packed density is the exact discrete
+    // aperiodic convolution (g_k is compactly supported in |z| < L, and only
+    // lags |z| <= Lz-dz occur). For k > 0, g_k(q*dz) = -dz*exp(-k*q*dz)/(2k)
+    // is geometric in q, so its cosine transform sums in closed form:
+    //   Ghat(kz) = -dz/(2k) * (1 + 2*Re[ (z - z^Nz)/(1 - z) ]),
+    // with z = exp(-k*dz - i*theta), theta = 2*pi*kz/(2*Nz) and
+    // z^Nz = exp(-k*Lz)*(-1)^kz. For k = 0, g_0(z) = |z|/2 on |z| < L and the
+    // (single) kx = ky = 0 mode is summed directly.
+    // The shear enters exactly as in the spectral kernel, through the
+    // shifted in-plane wave number kx -> kx - ddy*ky.
+    const int nkz = nk;               // global Nz (no decomposition along z)
+    const int nPad = vgfPadding*nkz;  // = 2*Nz
+    const real dz = Lx2/nkz;
+    idefix_for("SGSB3D_KernelAnalytic", 0, nloc[2], 0, nloc[1], 0, nloc[0],
+      KOKKOS_LAMBDA(int k, int j, int i) {
+        const int gi = low0 + i;
+        const int gj = low1 + j;
+        const int gk = low2 + k;
+        const int ni = (2*gi <= nGlob0) ? gi : gi - nGlob0;
+        const int njs = (2*gj <= nGlob1) ? gj : gj - nGlob1;
+        const real ky = TWO_PI*njs/Lx1;
+        const real kx = TWO_PI*ni/Lx0 - ddy*ky;
+        const real k2d = kx*kx + ky*ky;
+        const real theta = TWO_PI*gk/nPad;
+
+        real Gk = 0.0;
+        if(k2d == 0.0) {
+          real s = 0.0;
+          for(int q = 1; q < nkz; q++) s += q*cos(theta*q);
+          Gk = dz*dz*s;
+        } else {
+          const real kmod = sqrt(k2d);
+          const real w = exp(-kmod*dz);
+          const real cq = w*cos(theta);
+          const real sq = w*sin(theta);
+          const real wN = exp(-kmod*Lx2)*((gk % 2 == 0) ? 1.0 : -1.0);
+          const real numRe = cq - wN;
+          const real denRe = 1.0 - cq;
+          const real den = denRe*denRe + sq*sq;
+          const real Sre = (numRe*denRe - sq*sq)/den;
+          Gk = -dz/(2.0*kmod)*(1.0 + 2.0*Sre);
+        }
+        phiFLocal(k,j,i) = rhoFLocal(k,j,i) * (PI4G*Gk);
+      });
+  } else {
   idefix_for("SGSB3D_KernelFFT", 0, nloc[2], 0, nloc[1], 0, nloc[0],
       KOKKOS_LAMBDA(int k, int j, int i) {
         const int gi = low0 + i;
@@ -400,7 +479,7 @@ void SelfGravityShearingBox3D::SolvePoisson() {
         // (r2c along z): gk spans the non-negative modes only, and the
         // negative modes are reconstructed by the c2r via Hermitian symmetry
         // (the Green's function is even in kz).
-        const real kz = TWO_PI*gk/(VGF_PADDING*Lx2);
+        const real kz = TWO_PI*gk/(vgfPadding*Lx2);
 
         real Gk = 0.0;
         if(k2d == 0.0 && kz == 0.0) {
@@ -413,6 +492,7 @@ void SelfGravityShearingBox3D::SolvePoisson() {
         }
         phiFLocal(k,j,i) = rhoFLocal(k,j,i) * (PI4G*Gk);
       });
+  }
 
   fft->C2R(phiF, phiPacked);
 
@@ -424,12 +504,12 @@ void SelfGravityShearingBox3D::SolvePoisson() {
     const int iOffset = data->gbeg[IDIR];  // grid->x is ghost-padded
     ShearRemap::ShiftAlongJ("SGSB3D_RemapBwd", phiPacked, remapScratch, grid->x[IDIR],
                             -1.0, sbS, data->t, Ly, dy, iOffset,
-                            VGF_PADDING*data->np_int[KDIR], data->np_int[JDIR],
+                            vgfPadding*data->np_int[KDIR], data->np_int[JDIR],
                             data->np_int[IDIR]);
     fftOutput = remapScratch;
   }
 
-  // Unpack the potential (first quarter of the padded box) and fill the ghosts
+  // Unpack the potential (lower part of the padded box) and fill the ghosts
   IdefixArray3D<real> phiPackedLocal = fftOutput;
   IdefixArray3D<real> phiLocal = phi;
   const int ibegPhi = data->beg[IDIR];

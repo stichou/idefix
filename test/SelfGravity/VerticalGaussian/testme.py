@@ -32,7 +32,7 @@ def testMe(test):
     test.cmake.append("Idefix_HEFFTE=ON")
     test.configure()
     test.compile()
-    inifiles = ["idefix.ini", "idefix-centered.ini"]
+    inifiles = ["idefix.ini", "idefix-centered.ini", "idefix-analytic.ini"]
 
     # loop on all the ini files for this test
     for ini in inifiles:
