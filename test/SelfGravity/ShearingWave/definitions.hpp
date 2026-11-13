@@ -1,0 +1,21 @@
+// ***********************************************************************************
+// Idefix MHD astrophysical code
+//
+// Source file test/SelfGravity/ShearingWave/definitions.hpp
+//
+// Last modified : 11/2026
+//
+// Copyright(C) by :
+// - Geoffroy Lesur <geoffroy.lesur@univ-grenoble-alpes.fr> (IPAG/UGA/CNRS - 2025)
+// - Steven Rendon Restrepo <srendon@aip.de> (AIP - 2026)
+// and other code contributors
+//
+// Licensed under CeCILL 2.1 License, see COPYING for more information
+// ***********************************************************************************
+
+#define     COMPONENTS     2
+#define     DIMENSIONS     2
+
+#define     GEOMETRY       CARTESIAN
+// Order of the scheme. 1=donnor cell, 2= linear reconstruction
+#define     ORDER           2

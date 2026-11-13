@@ -1,0 +1,14 @@
+{
+    "namings": "mpi",
+    "default": {
+        "noplot": true,
+        "nonRegressionTest": false,
+        "dec": [2, 1],
+        "tolerance": 0
+    },
+    "variants": [
+        {
+            "mpi": [false, true]
+        }
+    ]
+}
