@@ -342,11 +342,12 @@ void SelfGravityShearingBox2D::SolvePoisson() {
   // (each x-column is shifted along y by -S x t)
   IdefixArray3D<real> fftInput = rho;
   if(sbS != 0.0) {
+    const real Lx = grid->xend[IDIR]-grid->xbeg[IDIR];
     const real Ly = grid->xend[JDIR]-grid->xbeg[JDIR];
     const real dy = Ly/grid->np_int[JDIR];
     const int iOffset = data->gbeg[IDIR];  // grid->x is ghost-padded
     ShearRemap::ShiftAlongJ("SGSB2D_RemapFwd", rho, remapScratch, grid->x[IDIR],
-                            +1.0, sbS, data->t, Ly, dy, iOffset,
+                            +1.0, sbS, data->t, Lx, Ly, dy, iOffset,
                             data->np_int[KDIR], data->np_int[JDIR],
                             data->np_int[IDIR]);
     fftInput = remapScratch;
@@ -354,12 +355,18 @@ void SelfGravityShearingBox2D::SolvePoisson() {
 
   fft->R2C(fftInput, rhoF);
 
-  // Effective in-plane wavevector: kx -> kx + (Delta_y0 / Lx) ky,
-  // with Delta_y0 = mod(S Lx t, Ly) (eq. 3 of Rendon Restrepo & Gressel 2026)
+  // Effective in-plane wavevector: kx -> kx - ddy*ky, with the residual
+  // shear slope
+  //   ddy = S*Om * mod(t, Ly/(S*Om*Lx)) = mod(S*Om*Lx*t, Ly)/Lx
+  // (eq. 3 of Rendon Restrepo & Gressel 2026), i.e. the shear accumulated
+  // since the last completed wrap. This MUST equal the shift slope applied
+  // by the remap (ShearRemap::ShiftAlongJ): the remap reindexes the
+  // shear-periodic eigenmodes K_m = 2*pi*m/Lx - (S*Om*t)*ky onto the regular
+  // kx grid, and the Laplacian is only diagonal in that eigenbasis.
   const real ddy = (sbS != 0.0)
-                   ? ShearRemap::PositiveMod(sbS*(grid->xend[IDIR]-grid->xbeg[IDIR])*data->t,
-                                             grid->xend[JDIR]-grid->xbeg[JDIR])
-                     /(grid->xend[IDIR]-grid->xbeg[IDIR])
+                   ? sbS*ShearRemap::WrappedTime(data->t, sbS,
+                                                 grid->xend[IDIR]-grid->xbeg[IDIR],
+                                                 grid->xend[JDIR]-grid->xbeg[JDIR])
                    : 0.0;
 
   // Apply the self-gravity kernel in Fourier space:
@@ -416,11 +423,12 @@ void SelfGravityShearingBox2D::SolvePoisson() {
   // Inverse shear remap: map the potential back to the shearing frame
   IdefixArray3D<real> fftOutput = phiPacked;
   if(sbS != 0.0) {
+    const real Lx = grid->xend[IDIR]-grid->xbeg[IDIR];
     const real Ly = grid->xend[JDIR]-grid->xbeg[JDIR];
     const real dy = Ly/grid->np_int[JDIR];
     const int iOffset = data->gbeg[IDIR];  // grid->x is ghost-padded
     ShearRemap::ShiftAlongJ("SGSB2D_RemapBwd", phiPacked, remapScratch, grid->x[IDIR],
-                            -1.0, sbS, data->t, Ly, dy, iOffset,
+                            -1.0, sbS, data->t, Lx, Ly, dy, iOffset,
                             data->np_int[KDIR], data->np_int[JDIR],
                             data->np_int[IDIR]);
     fftOutput = remapScratch;
