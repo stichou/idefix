@@ -77,6 +77,24 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
     IDEFIX_ERROR(msg);
   }
 
+  // FFT pipeline: "padded" (historical, one distributed transform of the
+  // vertically padded grid) or "compact" (SAFI pipeline on the unpadded
+  // grid, with a single compact pencil transpose; all FFT stages local).
+  std::string strPipeline = input.GetOrSet<std::string>("SelfGravity","pipeline",0,"padded");
+  if(strPipeline == "padded") {
+    useCompactPipeline = false;
+  } else if(strPipeline == "compact") {
+    // Placeholder: the compact (SAFI) pipeline lands with the local FFT and
+    // transpose utilities of src/utils/spectral (localFft, spectralTranspose).
+    IDEFIX_ERROR("SelfGravityShearingBox3D: the compact (SAFI) pipeline is not "
+                 "implemented yet; use [SelfGravity] pipeline = padded.");
+  } else {
+    std::stringstream msg;
+    msg << "SelfGravityShearingBox3D: unknown [SelfGravity] pipeline \"" << strPipeline
+        << "\". Use \"padded\" or \"compact\".";
+    IDEFIX_ERROR(msg);
+  }
+
   // Work arrays on the active (ghost-free) local domain, vertically padded
   rho = IdefixArray3D<real>("SGSB3D_Density", vgfPadding*data->np_int[KDIR],
                                             data->np_int[JDIR],

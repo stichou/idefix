@@ -16,4 +16,8 @@
 target_sources(idefix
   PUBLIC ${CMAKE_CURRENT_LIST_DIR}/heffteFft.hpp
   PUBLIC ${CMAKE_CURRENT_LIST_DIR}/heffteFft.cpp
+  PUBLIC ${CMAKE_CURRENT_LIST_DIR}/localFft.hpp
+  PUBLIC ${CMAKE_CURRENT_LIST_DIR}/localFft.cpp
+  PUBLIC ${CMAKE_CURRENT_LIST_DIR}/spectralTranspose.hpp
+  PUBLIC ${CMAKE_CURRENT_LIST_DIR}/spectralTranspose.cpp
   )

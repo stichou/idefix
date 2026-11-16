@@ -53,6 +53,16 @@ class SelfGravityShearingBox3D final : public SelfGravity {
   int vgfPadding{4};
   bool useAnalyticKernel{false};
 
+  // FFT pipeline of the solver:
+  // - "padded": the historical pipeline, one distributed r2c/c2r transform
+  //   of the vertically padded grid (z-first ordering).
+  // - "compact": the SAFI pipeline, operating on the unpadded grid: local
+  //   y-r2c, exact spectral unshear (SAFI phase), x transform after a single
+  //   compact pencil transpose, local z transform on the padded columns, and
+  //   the symmetric backward chain. All transform stages are local; the only
+  //   communication is the transpose of the compact (unpadded) array.
+  bool useCompactPipeline{false};
+
   // Packed local active arrays (no ghost cells) following the input box layout.
   // The vertical direction is zero-padded by a factor vgfPadding (x4 for the
   // spectral kernel, x2 for the analytic kernel).
