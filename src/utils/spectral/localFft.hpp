@@ -82,6 +82,8 @@ class LocalFft {
       typename heffte::backend::buffer_traits<HeffteBackendTag>::location> device;
 
   std::unique_ptr<heffte::executor_base> exec;   // C2C / R2C / C2R executor
+  IdefixArray1D<complex> workspace;              // backend workspace (GPU backends
+                                                 // may need one; 0 on CPU backends)
   LocalFftKind kind;
   int axis;
   int inCount;                        // number of entries of the input array

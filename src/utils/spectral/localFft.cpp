@@ -73,6 +73,12 @@ LocalFft::LocalFft(std::array<int,3> boxSize, int axisIn, LocalFftKind kindIn)
         new typename heffte::one_dim_backend<HeffteBackendTag>::executor(
             device.stream(), box, axis));
   }
+  // Some GPU backends (e.g. cuFFT r2c) require a workspace; CPU backends
+  // declare none. heFFTe's own fft3d always allocates it, so do the same.
+  if(exec->workspace_size() > 0) {
+    workspace = IdefixArray1D<complex>("LocalFftWorkspace", exec->workspace_size());
+  }
+
   idfx::popRegion();
 }
 
@@ -85,7 +91,8 @@ void LocalFft::Forward(const IdefixArray3D<complex> &in,
   if(in.data() != out.data()) {
     Kokkos::deep_copy(out, in);
   }
-  exec->forward(asStd(const_cast<IdefixArray3D<complex>&>(out)), nullptr);
+  exec->forward(asStd(const_cast<IdefixArray3D<complex>&>(out)),
+                reinterpret_cast<CmplxT*>(workspace.data()));
   idfx::popRegion();
 }
 
@@ -98,7 +105,8 @@ void LocalFft::Backward(const IdefixArray3D<complex> &in,
   if(in.data() != out.data()) {
     Kokkos::deep_copy(out, in);
   }
-  exec->backward(asStd(const_cast<IdefixArray3D<complex>&>(out)), nullptr);
+  exec->backward(asStd(const_cast<IdefixArray3D<complex>&>(out)),
+                 reinterpret_cast<CmplxT*>(workspace.data()));
   // Apply the scaling
   idefix_for("LocalFft::Scale", 0, outSize[2], 0, outSize[1], 0, outSize[0],
     KOKKOS_LAMBDA(int k, int j, int i) {
@@ -113,7 +121,8 @@ void LocalFft::Forward(const IdefixArray3D<real> &in,
   if(kind != LocalFftKind::R2C) {
     IDEFIX_ERROR("LocalFft: Forward(R2C) requires an R2C transform.");
   }
-  exec->forward(in.data(), asStd(const_cast<IdefixArray3D<complex>&>(out)), nullptr);
+  exec->forward(in.data(), asStd(const_cast<IdefixArray3D<complex>&>(out)),
+                reinterpret_cast<CmplxT*>(workspace.data()));
   idfx::popRegion();
 }
 
@@ -123,7 +132,8 @@ void LocalFft::Backward(const IdefixArray3D<complex> &in,
   if(kind != LocalFftKind::C2R) {
     IDEFIX_ERROR("LocalFft: Backward(C2R) requires a C2R transform.");
   }
-  exec->backward(asStd(const_cast<IdefixArray3D<complex>&>(in)), out.data(), nullptr);
+  exec->backward(asStd(const_cast<IdefixArray3D<complex>&>(in)), out.data(),
+                 reinterpret_cast<CmplxT*>(workspace.data()));
   // Apply the scaling
   const std::array<int,3> os = outSize;
   idefix_for("LocalFft::Scale", 0, os[2], 0, os[1], 0, os[0],
