@@ -21,7 +21,9 @@
 
 #include "selfGravity.hpp"
 #include "heffteFft.hpp"
+#include "localFft.hpp"
 #include "shearRemap.hpp"
+#include "spectralTranspose.hpp"
 
 #ifdef WITH_MPI
 #include "mpi.hpp"
@@ -42,8 +44,24 @@ class SelfGravityShearingBox3D final : public SelfGravity {
  private:
   void CheckCompatibility();
   void SetBoundaries(IdefixArray3D<real> &);
+  void SolvePoissonCompact();
 
   std::unique_ptr<HeffteFft> fft;
+
+  // Compact (SAFI) pipeline: local batched transforms + a single pencil
+  // transpose (the only communicating stage). All arrays are compact:
+  // the vertical padding exists only in the pencil buffer rhoXP.
+  std::unique_ptr<LocalFft> fftY;      ///< y r2c on the local slab
+  std::unique_ptr<LocalFft> fftYinv;   ///< y c2r on the local slab
+  std::unique_ptr<LocalFft> fftX;       ///< x c2c on the pencil
+  std::unique_ptr<LocalFft> fftZ;       ///< z c2c on the padded pencil
+  std::unique_ptr<SpectralTranspose> transpose;  ///< slab <-> pencil
+  IdefixArray3D<real> rhoCompact;   ///< (nz, ny, nxLoc) packed density
+  IdefixArray3D<complex> rhoY;     ///< (nz, ny/2+1, nxLoc) y-spectral slab
+  IdefixArray3D<complex> rhoX;     ///< (nz, kyLoc, nx) spectral pencil
+  IdefixArray3D<complex> rhoXP;    ///< (vgfPadding*nz, kyLoc, nx) padded pencil
+  int kyOffset{0};  ///< global index of the first ky mode of the local pencil
+  int kyLocal{0};   ///< number of ky modes of the local pencil
 
   // Vertical zero-padding factor of the FFT grid. With the spectral kernel
   // (eq. 14 sampled on the padded kz grid) the VGF-HybridBC method requires

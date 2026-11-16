@@ -21,6 +21,7 @@
 
 #ifdef WITH_HEFFTE
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <sstream>
@@ -84,10 +85,16 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
   if(strPipeline == "padded") {
     useCompactPipeline = false;
   } else if(strPipeline == "compact") {
-    // Placeholder: the compact (SAFI) pipeline lands with the local FFT and
-    // transpose utilities of src/utils/spectral (localFft, spectralTranspose).
-    IDEFIX_ERROR("SelfGravityShearingBox3D: the compact (SAFI) pipeline is not "
-                 "implemented yet; use [SelfGravity] pipeline = padded.");
+    useCompactPipeline = true;
+    if(sbS != 0.0) {
+      IDEFIX_ERROR("SelfGravityShearingBox3D: the compact pipeline does not support "
+                   "a non-zero shear yet (the SAFI unshear lands next); use "
+                   "[Hydro] shearingBox 0 or pipeline = padded.");
+    }
+    if(grid->nproc[JDIR] > 1) {
+      IDEFIX_ERROR("SelfGravityShearingBox3D: the compact pipeline requires no domain "
+                   "decomposition along X2: use -dec n 1 1.");
+    }
   } else {
     std::stringstream msg;
     msg << "SelfGravityShearingBox3D: unknown [SelfGravity] pipeline \"" << strPipeline
@@ -95,48 +102,91 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
     IDEFIX_ERROR(msg);
   }
 
-  // Work arrays on the active (ghost-free) local domain, vertically padded
-  rho = IdefixArray3D<real>("SGSB3D_Density", vgfPadding*data->np_int[KDIR],
-                                            data->np_int[JDIR],
-                                            data->np_int[IDIR]);
-  phiPacked = IdefixArray3D<real>("SGSB3D_Potential", vgfPadding*data->np_int[KDIR],
-                                                 data->np_int[JDIR],
-                                                 data->np_int[IDIR]);
+  if(useCompactPipeline) {
+    // Compact pipeline: distribute the ky modes of the y-r2c spectrum across
+    // ranks (pencils with full x and z), so that every transform stage is
+    // local and only the slab <-> pencil transpose communicates.
+    const int nx = grid->np_int[IDIR];
+    const int ny = grid->np_int[JDIR];
+    const int nz = data->np_int[KDIR];
+    const int nyh = ny/2 + 1;
+    const int nproc = grid->nproc[IDIR];
+    if(nproc > nyh) {
+      std::stringstream msg;
+      msg << "SelfGravityShearingBox3D: the compact pipeline splits the "
+          << nyh << " ky modes across ranks and requires nproc(X1) <= " << nyh << ".";
+      IDEFIX_ERROR(msg);
+    }
+    // Even split of the ky modes (first ranks take the remainder)
+    kyLocal = nyh/nproc + ((idfx::prank < nyh % nproc) ? 1 : 0);
+    kyOffset = (nyh/nproc)*idfx::prank + std::min(idfx::prank, nyh % nproc);
+    const int nxLoc = data->np_int[IDIR];
+    rhoCompact = IdefixArray3D<real>("SGSB3C_Rho", nz, ny, nxLoc);
+    rhoY = IdefixArray3D<complex>("SGSB3C_RhoY", nz, nyh, nxLoc);
+    rhoX = IdefixArray3D<complex>("SGSB3C_RhoX", nz, kyLocal, nx);
+    rhoXP = IdefixArray3D<complex>("SGSB3C_RhoXP", vgfPadding*nz, kyLocal, nx);
+    fftY = std::make_unique<LocalFft>(std::array<int,3>{nxLoc, ny, nz}, 1,
+                                       LocalFftKind::R2C);
+    fftYinv = std::make_unique<LocalFft>(std::array<int,3>{nxLoc, ny, nz}, 1,
+                                         LocalFftKind::C2R);
+    fftX = std::make_unique<LocalFft>(std::array<int,3>{nx, kyLocal, nz}, 0,
+                                       LocalFftKind::C2C);
+    fftZ = std::make_unique<LocalFft>(std::array<int,3>{nx, kyLocal, vgfPadding*nz}, 2,
+                                       LocalFftKind::C2C);
+    transpose = std::make_unique<SpectralTranspose>(
+        std::array<int,3>{nx, nyh, nz},
+        std::array<int,3>{nxLoc, nyh, nz},
+        std::array<int,3>{data->gbeg[IDIR] - data->nghost[IDIR], 0, 0},
+        std::array<int,3>{nx, kyLocal, nz},
+        std::array<int,3>{0, kyOffset, 0});
+  }
+
   phi = IdefixArray3D<real>("SGSB3D_Phi", data->np_tot[KDIR],
                                         data->np_tot[JDIR],
                                         data->np_tot[IDIR]);
-  remapScratch = IdefixArray3D<real>("SGSB3D_Remap", vgfPadding*data->np_int[KDIR],
-                                                 data->np_int[JDIR],
-                                                 data->np_int[IDIR]);
   ghostScratch = IdefixArray3D<real>("SGSB3D_GhostScratch", data->np_tot[KDIR],
                                                data->np_tot[JDIR],
                                                2*data->nghost[IDIR]);
 
-  // Global and local descriptions of the padded FFT domain (i,j,k order)
-  worldSize = {grid->np_int[IDIR], grid->np_int[JDIR], grid->np_int[KDIR]};
-  worldSizePad = {grid->np_int[IDIR], grid->np_int[JDIR],
-                  vgfPadding*grid->np_int[KDIR]};
-  std::array<int,3> localSize = {data->np_int[IDIR], data->np_int[JDIR],
-                                  vgfPadding*data->np_int[KDIR]};
-  std::array<int,3> localOffset = {data->gbeg[IDIR] - data->nghost[IDIR],
-                                   data->gbeg[JDIR] - data->nghost[JDIR],
-                                   0};
+  if(!useCompactPipeline) {
+    // Work arrays of the padded pipeline on the active (ghost-free) local
+    // domain, vertically padded
+    rho = IdefixArray3D<real>("SGSB3D_Density", vgfPadding*data->np_int[KDIR],
+                                              data->np_int[JDIR],
+                                              data->np_int[IDIR]);
+    phiPacked = IdefixArray3D<real>("SGSB3D_Potential", vgfPadding*data->np_int[KDIR],
+                                                   data->np_int[JDIR],
+                                                   data->np_int[IDIR]);
+    remapScratch = IdefixArray3D<real>("SGSB3D_Remap", vgfPadding*data->np_int[KDIR],
+                                                   data->np_int[JDIR],
+                                                   data->np_int[IDIR]);
 
-  // r2c along z: heFFTe transforms the r2c direction first, so the FFT runs
-  // z -> y -> x. With the x/y directions already local (recommended -dec), the
-  // z and y transforms are transpose-free and the complex output is
-  // distributed in x-pencils, leaving a single reshape per transform (the
-  // x-pencil gather). The complex spectrum is halved along z.
-  fft = std::make_unique<HeffteFft>(worldSizePad, localSize, localOffset, 2);
+    // Global and local descriptions of the padded FFT domain (i,j,k order)
+    worldSize = {grid->np_int[IDIR], grid->np_int[JDIR], grid->np_int[KDIR]};
+    worldSizePad = {grid->np_int[IDIR], grid->np_int[JDIR],
+                    vgfPadding*grid->np_int[KDIR]};
+    std::array<int,3> localSize = {data->np_int[IDIR], data->np_int[JDIR],
+                                    vgfPadding*data->np_int[KDIR]};
+    std::array<int,3> localOffset = {data->gbeg[IDIR] - data->nghost[IDIR],
+                                     data->gbeg[JDIR] - data->nghost[JDIR],
+                                     0};
 
-  outLow = fft->getOutboxLow();
-  outSize = fft->getOutboxSize();
-  rhoF = IdefixArray3D<complex>("SGSB3D_rhoHat", outSize[2],
-                                              outSize[1],
-                                              outSize[0]);
-  phiF = IdefixArray3D<complex>("SGSB3D_phiHat", outSize[2],
-                                              outSize[1],
-                                              outSize[0]);
+    // r2c along z: heFFTe transforms the r2c direction first, so the FFT runs
+    // z -> y -> x. With the x/y directions already local (recommended -dec), the
+    // z and y transforms are transpose-free and the complex output is
+    // distributed in x-pencils, leaving a single reshape per transform (the
+    // x-pencil gather). The complex spectrum is halved along z.
+    fft = std::make_unique<HeffteFft>(worldSizePad, localSize, localOffset, 2);
+
+    outLow = fft->getOutboxLow();
+    outSize = fft->getOutboxSize();
+    rhoF = IdefixArray3D<complex>("SGSB3D_rhoHat", outSize[2],
+                                                outSize[1],
+                                                outSize[0]);
+    phiF = IdefixArray3D<complex>("SGSB3D_phiHat", outSize[2],
+                                                outSize[1],
+                                                outSize[0]);
+  }
 
   #ifdef WITH_MPI
   std::vector<int> mapVars;
@@ -200,7 +250,8 @@ void SelfGravityShearingBox3D::ShowConfig() {
   idfx::cout << "SelfGravityShearingBox3D: Using the VGF-HybridBC spectral solver "
              << "(vacuum vertical BCs, vertical padding x"
              << vgfPadding << ", alpha = " << alpha << ", kernel = "
-             << (useAnalyticKernel ? "analytic" : "spectral") << ")." << std::endl;
+             << (useAnalyticKernel ? "analytic" : "spectral")
+             << (useCompactPipeline ? ", pipeline = compact" : "") << ")." << std::endl;
   if(skipSelfGravity > 1) {
     idfx::cout << "SelfGravityShearingBox3D: self-gravity field will be updated every "
                << skipSelfGravity << " cycles." << std::endl;
@@ -364,10 +415,170 @@ void SelfGravityShearingBox3D::SetBoundaries(IdefixArray3D<real> &arr) {
   idfx::popRegion();
 }
 
+
+// Compact (SAFI) pipeline, shear-free version (phase 1):
+//   1. pack rho into the compact slab (nz, ny, nxLoc)
+//   2. local y-r2c                -> (nz, ny/2+1, nxLoc)
+//   3. transpose to ky-pencils   -> (nz, kyLoc, nx)   [the only communication]
+//   4. local x-c2c (in place)
+//   5. pad z (zeros above the active planes)
+//   6. local z-c2c (in place)    -> (vgfPadding*nz, kyLoc, nx)
+//   7. pointwise Green's function (closed form, no transform of the kernel)
+//   8. local z-inverse (scaled 1/(vgfPadding*nz))
+//   9. truncate to the active planes
+//  10. local x-inverse (scaled 1/nx)
+//  11. transpose back to the slab [the only communication]
+//  12. local y-c2r (scaled 1/ny)
+//  13. unpack the potential and fill the ghost cells
+// The composed normalisation 1/(nx*ny*vgfPadding*nz) matches the scale::full
+// convention of the padded pipeline, so the Green's function (defined with
+// respect to the unscaled forward transform) is unchanged.
+void SelfGravityShearingBox3D::SolvePoissonCompact() {
+  idfx::pushRegion("SelfGravityShearingBox3D::SolvePoissonCompact");
+  Grid *grid = data->mygrid;
+
+  const int nx = grid->np_int[IDIR];
+  const int ny = grid->np_int[JDIR];
+  const int nz = data->np_int[KDIR];
+  const int nzPad = vgfPadding*nz;
+  const int nyh = ny/2 + 1;
+  const int ibeg = data->beg[IDIR];
+  const int jbeg = data->beg[JDIR];
+  const int kbeg = data->beg[KDIR];
+
+  // --- 1. Pack the active density into the compact slab
+  IdefixArray4D<real> Vc = data->hydro->Vc;
+  IdefixArray3D<real> rhoC = rhoCompact;
+  idefix_for("SGSB3C_PackRho", 0, nz,
+                              data->beg[JDIR], data->end[JDIR],
+                              data->beg[IDIR], data->end[IDIR],
+    KOKKOS_LAMBDA (int k, int j, int i) {
+      rhoC(k, j - jbeg, i - ibeg) = Vc(RHO, k + kbeg, j, i);
+    });
+
+  // --- 2-3. y transform (local) and transpose to the ky pencils
+  fftY->Forward(rhoCompact, rhoY);
+  transpose->Forward(rhoY, rhoX);
+
+  // --- 4. x transform (local, in place)
+  fftX->Forward(rhoX, rhoX);
+
+  // --- 5. Zero-pad the vertical direction in the pencil buffer
+  IdefixArray3D<complex> rX = rhoX;
+  IdefixArray3D<complex> rXP = rhoXP;
+  idefix_for("SGSB3C_Pad", 0, nzPad, 0, kyLocal, 0, nx,
+    KOKKOS_LAMBDA (int k, int j, int i) {
+      rXP(k,j,i) = (k < nz) ? rX(k,j,i) : complex(0.0, 0.0);
+    });
+
+  // --- 6. z transform (local, in place)
+  fftZ->Forward(rhoXP, rhoXP);
+
+  // --- 7. Pointwise Green's function in Fourier space. Identical kernels as
+  // the padded pipeline; the index mapping differs: the pencil owns the full
+  // signed kx range, the non-negative ky range (y-r2c) and the full signed kz
+  // range (z-c2c). The kernels are even in kz, so both kz signs get the same
+  // value, and ky >= 0 covers the Hermitian half left implicit by the c2r.
+  {
+    const real Lx0 = grid->xend[IDIR]-grid->xbeg[IDIR];
+    const real Lx1 = grid->xend[JDIR]-grid->xbeg[JDIR];
+    const real Lx2 = grid->xend[KDIR]-grid->xbeg[KDIR];
+    const real gravCst = data->gravity->gravCst;
+    const real L = this->alpha * Lx2;
+    const real TWO_PI = 2.0*M_PI;
+    const real PI4G = 4.0*M_PI*gravCst;
+    const real dz = Lx2/nz;
+    const int kyOff = this->kyOffset;
+    const bool analytic = this->useAnalyticKernel;
+    idefix_for("SGSB3C_Kernel", 0, nzPad, 0, kyLocal, 0, nx,
+      KOKKOS_LAMBDA (int k, int j, int i) {
+        // Global mode numbers: signed kx, non-negative ky, signed kz
+        const int ni = (2*i <= nx) ? i : i - nx;
+        const int gj = kyOff + j;
+        const int gk = (2*k <= nzPad) ? k : k - nzPad;
+        const real ky = TWO_PI*gj/Lx1;
+        const real kx = TWO_PI*ni/Lx0;
+        const real k2d = kx*kx + ky*ky;
+
+        real Gk = 0.0;
+        if(analytic) {
+          // Closed-form z-DFT of the packed real-space kernel (see the
+          // padded pipeline for the derivation); even in the signed kz mode.
+          const real theta = TWO_PI*gk/nzPad;
+          if(k2d == 0.0) {
+            real s = 0.0;
+            for(int q = 1; q < nz; q++) s += q*cos(theta*q);
+            Gk = dz*dz*s;
+          } else {
+            const real kmod = sqrt(k2d);
+            const real w = exp(-kmod*dz);
+            const real cq = w*cos(theta);
+            const real sq = w*sin(theta);
+            const real wN = exp(-kmod*Lx2)*((gk % 2 == 0) ? 1.0 : -1.0);
+            const real numRe = cq - wN;
+            const real denRe = 1.0 - cq;
+            const real den = denRe*denRe + sq*sq;
+            const real Sre = (numRe*denRe - sq*sq)/den;
+            Gk = -dz/(2.0*kmod)*(1.0 + 2.0*Sre);
+          }
+        } else {
+          // Eq. 14 of Rendon Restrepo & Gressel 2026, with L = alpha Lz
+          const real kz = TWO_PI*gk/(vgfPadding*Lx2);
+          if(k2d == 0.0 && kz == 0.0) {
+            Gk = 0.5*L*L;
+          } else if(k2d == 0.0) {
+            Gk = (kz*L*sin(kz*L) + cos(kz*L) - 1.0)/(kz*kz);
+          } else {
+            const real kmod = sqrt(k2d);
+            Gk = -(exp(-kmod*L)*((kz/kmod)*sin(kz*L) - cos(kz*L)) + 1.0)
+                 /(k2d + kz*kz);
+          }
+        }
+        rXP(k,j,i) *= (PI4G*Gk);
+      });
+  }
+
+  // --- 8. z inverse (local, in place)
+  fftZ->Backward(rhoXP, rhoXP, 1.0/nzPad);
+
+  // --- 9. Truncate to the active planes
+  idefix_for("SGSB3C_Truncate", 0, nz, 0, kyLocal, 0, nx,
+    KOKKOS_LAMBDA (int k, int j, int i) {
+      rX(k,j,i) = rXP(k,j,i);
+    });
+
+  // --- 10-11. x inverse (local) and transpose back to the slab
+  fftX->Backward(rhoX, rhoX, 1.0/nx);
+  transpose->Backward(rhoX, rhoY);
+
+  // --- 12. y inverse (local)
+  fftYinv->Backward(rhoY, rhoCompact, 1.0/ny);
+
+  // --- 13. Unpack the potential and fill the ghost cells
+  IdefixArray3D<real> phiLocal = phi;
+  idefix_for("SGSB3C_UnpackPhi", data->beg[KDIR], data->end[KDIR],
+                                data->beg[JDIR], data->end[JDIR],
+                                data->beg[IDIR], data->end[IDIR],
+    KOKKOS_LAMBDA (int k, int j, int i) {
+      phiLocal(k, j, i) = rhoC(k - kbeg, j - jbeg, i - ibeg);
+    });
+
+  SetBoundaries(phi);
+
+  idfx::popRegion();
+}
+
 void SelfGravityShearingBox3D::SolvePoisson() {
   idfx::pushRegion("SelfGravityShearingBox3D::SolvePoisson");
   Kokkos::Timer timer;
   elapsedTime -= timer.seconds();
+
+  if(useCompactPipeline) {
+    SolvePoissonCompact();
+    elapsedTime += timer.seconds();
+    idfx::popRegion();
+    return;
+  }
 
   Grid *grid = data->mygrid;
 
