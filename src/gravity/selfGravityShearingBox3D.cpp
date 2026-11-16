@@ -86,11 +86,6 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
     useCompactPipeline = false;
   } else if(strPipeline == "compact") {
     useCompactPipeline = true;
-    if(sbS != 0.0) {
-      IDEFIX_ERROR("SelfGravityShearingBox3D: the compact pipeline does not support "
-                   "a non-zero shear yet (the SAFI unshear lands next); use "
-                   "[Hydro] shearingBox 0 or pipeline = padded.");
-    }
     if(grid->nproc[JDIR] > 1) {
       IDEFIX_ERROR("SelfGravityShearingBox3D: the compact pipeline requires no domain "
                    "decomposition along X2: use -dec n 1 1.");
@@ -416,9 +411,13 @@ void SelfGravityShearingBox3D::SetBoundaries(IdefixArray3D<real> &arr) {
 }
 
 
-// Compact (SAFI) pipeline, shear-free version (phase 1):
+// Compact (SAFI) pipeline:
 //   1. pack rho into the compact slab (nz, ny, nxLoc)
 //   2. local y-r2c                -> (nz, ny/2+1, nxLoc)
+//   2b. SAFI unshear: exact spectral shift of each x-column by the residual
+//       shear delta(x) = ddy*x (phase exp(+i ky delta) on the y-spectrum,
+//       while x is still real); replaces the interpolated remap of the
+//       padded pipeline
 //   3. transpose to ky-pencils   -> (nz, kyLoc, nx)   [the only communication]
 //   4. local x-c2c (in place)
 //   5. pad z (zeros above the active planes)
@@ -428,6 +427,7 @@ void SelfGravityShearingBox3D::SetBoundaries(IdefixArray3D<real> &arr) {
 //   9. truncate to the active planes
 //  10. local x-inverse (scaled 1/nx)
 //  11. transpose back to the slab [the only communication]
+//  11b. SAFI re-shear: conjugate phase of the unshear
 //  12. local y-c2r (scaled 1/ny)
 //  13. unpack the potential and fill the ghost cells
 // The composed normalisation 1/(nx*ny*vgfPadding*nz) matches the scale::full
@@ -456,8 +456,40 @@ void SelfGravityShearingBox3D::SolvePoissonCompact() {
       rhoC(k, j - jbeg, i - ibeg) = Vc(RHO, k + kbeg, j, i);
     });
 
-  // --- 2-3. y transform (local) and transpose to the ky pencils
+  // Residual shear slope (time wrapped at the shear period, as in the
+  // linear remap of the padded pipeline; see ShearRemap::ShiftAlongJ). Both
+  // the SAFI phase below and the kx shift of the kernel use this slope: the
+  // shift slope applied to the field MUST equal the kernel's kx-shift slope.
+  const real Lx = grid->xend[IDIR]-grid->xbeg[IDIR];
+  const real Ly = grid->xend[JDIR]-grid->xbeg[JDIR];
+  const real ddy = (sbS != 0.0)
+                   ? sbS*ShearRemap::WrappedTime(data->t, sbS, Lx, Ly)
+                   : 0.0;
+
+  // --- 2. y transform (local)
   fftY->Forward(rhoCompact, rhoY);
+
+  // --- SAFI unshear (step 2 of the compact pipeline): exact spectral
+  // shift of each x-column along y by the residual shear delta(x) =
+  // ddy*x, applied as the phase exp(+i ky delta) on the y-spectrum while x
+  // is still real. This replaces the interpolated remap of the padded
+  // pipeline: the shift is exact (no interpolation error), and the phase
+  // is 2*pi-periodic in delta so no wrapping is needed.
+  if(sbS != 0.0) {
+    IdefixArray1D<real> xglob = grid->x[IDIR];
+    const int iOffset = data->gbeg[IDIR];  // grid->x is ghost-padded
+    IdefixArray3D<complex> rY = rhoY;
+    const real TWO_PI_SAFI = 2.0*M_PI;
+    idefix_for("SGSB3C_SafiUnshear", 0, nyh, 0, data->np_int[IDIR],
+      KOKKOS_LAMBDA(int m, int i) {
+        const real ky = TWO_PI_SAFI*m/Ly;
+        const real ph = ky*ddy*xglob(iOffset+i);
+        const complex w(cos(ph), sin(ph));
+        for(int k = 0; k < nz; k++) rY(k,m,i) *= w;
+      });
+  }
+
+  // --- 3. transpose to the ky pencils
   transpose->Forward(rhoY, rhoX);
 
   // --- 4. x transform (local, in place)
@@ -497,7 +529,9 @@ void SelfGravityShearingBox3D::SolvePoissonCompact() {
         const int gj = kyOff + j;
         const int gk = (2*k <= nzPad) ? k : k - nzPad;
         const real ky = TWO_PI*gj/Lx1;
-        const real kx = TWO_PI*ni/Lx0;
+        // Sheared in-plane wave number (eq. 3 of Rendon Restrepo & Gressel
+        // 2026): the shift slope ddy equals the SAFI phase slope above.
+        const real kx = TWO_PI*ni/Lx0 - ddy*ky;
         const real k2d = kx*kx + ky*ky;
 
         real Gk = 0.0;
@@ -550,6 +584,22 @@ void SelfGravityShearingBox3D::SolvePoissonCompact() {
   // --- 10-11. x inverse (local) and transpose back to the slab
   fftX->Backward(rhoX, rhoX, 1.0/nx);
   transpose->Backward(rhoX, rhoY);
+
+  // --- SAFI re-shear (step 10): exact spectral shift back to the shearing
+  // frame, the conjugate phase of the unshear (applied while x is real).
+  if(sbS != 0.0) {
+    IdefixArray1D<real> xglob = grid->x[IDIR];
+    const int iOffset = data->gbeg[IDIR];  // grid->x is ghost-padded
+    IdefixArray3D<complex> rY = rhoY;
+    const real TWO_PI_SAFI = 2.0*M_PI;
+    idefix_for("SGSB3C_SafiReshear", 0, nyh, 0, data->np_int[IDIR],
+      KOKKOS_LAMBDA(int m, int i) {
+        const real ky = TWO_PI_SAFI*m/Ly;
+        const real ph = ky*ddy*xglob(iOffset+i);
+        const complex w(cos(ph), -sin(ph));
+        for(int k = 0; k < nz; k++) rY(k,m,i) *= w;
+      });
+  }
 
   // --- 12. y inverse (local)
   fftYinv->Backward(rhoY, rhoCompact, 1.0/ny);
