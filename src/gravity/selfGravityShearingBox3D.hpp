@@ -55,13 +55,25 @@ class SelfGravityShearingBox3D final : public SelfGravity {
   std::unique_ptr<LocalFft> fftYinv;   ///< y c2r on the local slab
   std::unique_ptr<LocalFft> fftX;       ///< x c2c on the pencil
   std::unique_ptr<LocalFft> fftZ;       ///< z c2c on the padded pencil
-  std::unique_ptr<SpectralTranspose> transpose;  ///< slab <-> pencil
+  std::unique_ptr<SpectralTranspose> transpose;   ///< slab <-> pencil P1
+  std::unique_ptr<SpectralTranspose> transpose2;  ///< pencil P1 <-> P2 (general case)
   IdefixArray3D<real> rhoCompact;   ///< (nz, ny, nxLoc) packed density
   IdefixArray3D<complex> rhoY;     ///< (nz, ny/2+1, nxLoc) y-spectral slab
-  IdefixArray3D<complex> rhoX;     ///< (nz, kyLoc, nx) spectral pencil
-  IdefixArray3D<complex> rhoXP;    ///< (vgfPadding*nz, kyLoc, nx) padded pencil
-  int kyOffset{0};  ///< global index of the first ky mode of the local pencil
-  int kyLocal{0};   ///< number of ky modes of the local pencil
+  IdefixArray3D<complex> rhoX;     ///< pencil P1: (zLoc, kyLoc, nx), x full
+  IdefixArray3D<complex> rhoXP;    ///< pencil P2: (vgfPadding*nz, ky2Loc, x2Loc), z full
+  // Pencil P1 (after the first transpose): full x, slice of the (ky, kz)
+  // space. In the simple case (nproc <= Ny/2+1) the split is along ky only
+  // and P1 = P2.
+  int kyOffset{0};  ///< global index of the first ky mode of the P1 slice
+  int kyLocal{0};   ///< number of ky modes of the P1 slice
+  int zOffset{0};   ///< global index of the first z plane of the P1 slice
+  int zLocal{0};    ///< number of z planes of the P1 slice
+  // Pencil P2 (transform stage of z): full z, slice of the (kx, ky) space.
+  // Exists for any rank count; in the simple case P2 = P1.
+  int x2Offset{0};   ///< global index of the first kx mode of the P2 slice
+  int x2Local{0};    ///< number of kx modes of the P2 slice
+  int ky2Offset{0};  ///< global index of the first ky mode of the P2 slice
+  int ky2Local{0};   ///< number of ky modes of the P2 slice
 
   // Vertical zero-padding factor of the FFT grid. With the spectral kernel
   // (eq. 14 sampled on the padded kz grid) the VGF-HybridBC method requires

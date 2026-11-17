@@ -98,42 +98,101 @@ void SelfGravityShearingBox3D::Init(Input &input, DataBlock *datain) {
   }
 
   if(useCompactPipeline) {
-    // Compact pipeline: distribute the ky modes of the y-r2c spectrum across
-    // ranks (pencils with full x and z), so that every transform stage is
-    // local and only the slab <-> pencil transpose communicates.
+    // Compact pipeline: two pencil layouts make every transform stage local.
+    // P1 (after the first transpose) has full x and slices the (ky, kz)
+    // space; P2 (transform stage of z) has full z and slices the (kx, ky)
+    // space. In the simple case (nproc <= Ny/2+1), P1 = P2 splits ky only
+    // and the second transpose is skipped.
     const int nx = grid->np_int[IDIR];
     const int ny = grid->np_int[JDIR];
     const int nz = data->np_int[KDIR];
     const int nyh = ny/2 + 1;
     const int nproc = grid->nproc[IDIR];
-    if(nproc > nyh) {
-      std::stringstream msg;
-      msg << "SelfGravityShearingBox3D: the compact pipeline splits the "
-          << nyh << " ky modes across ranks and requires nproc(X1) <= " << nyh << ".";
-      IDEFIX_ERROR(msg);
-    }
-    // Even split of the ky modes (first ranks take the remainder)
-    kyLocal = nyh/nproc + ((idfx::prank < nyh % nproc) ? 1 : 0);
-    kyOffset = (nyh/nproc)*idfx::prank + std::min(idfx::prank, nyh % nproc);
+    const int rank = idfx::prank;
     const int nxLoc = data->np_int[IDIR];
+    // Even split of n cells among np parts: part i owns size/offset
+    auto splitSize = [](int n, int part, int nparts) {
+      return n/nparts + ((part < n % nparts) ? 1 : 0);
+    };
+    auto splitOffset = [](int n, int part, int nparts) {
+      return (n/nparts)*part + std::min(part, n % nparts);
+    };
+
+    if(nproc <= nyh) {
+      // Simple case: P1 = P2, ky-only split
+      kyLocal = splitSize(nyh, rank, nproc);
+      kyOffset = splitOffset(nyh, rank, nproc);
+      zLocal = nz; zOffset = 0;
+      x2Local = nx; x2Offset = 0;
+      ky2Local = kyLocal; ky2Offset = kyOffset;
+    } else {
+      // General case: P1 slices (ky, kz), P2 slices (kx, ky), so that any
+      // rank count fits. Find the pencil factorisations: the largest divisor
+      // of nproc satisfying the extent limits.
+      int nKy1 = 0;
+      for(int d = std::min(nyh, nproc); d >= 1; d--) {
+        if(nproc % d == 0 && nproc/d <= nz) { nKy1 = d; break; }
+      }
+      if(nKy1 == 0) {
+        std::stringstream msg;
+        msg << "SelfGravityShearingBox3D: the compact pipeline cannot split "
+            << nproc << " ranks into the (" << nyh << " ky modes x " << nz
+            << " z planes) pencil space; reduce the rank count or increase "
+               "the grid.";
+        IDEFIX_ERROR(msg);
+      }
+      const int nKz1 = nproc/nKy1;
+      kyLocal = splitSize(nyh, rank % nKy1, nKy1);
+      kyOffset = splitOffset(nyh, rank % nKy1, nKy1);
+      zLocal = splitSize(nz, rank / nKy1, nKz1);
+      zOffset = splitOffset(nz, rank / nKy1, nKz1);
+      int nKx2 = 0;
+      for(int d = std::min(nx, nproc); d >= 1; d--) {
+        if(nproc % d == 0 && nproc/d <= nyh) { nKx2 = d; break; }
+      }
+      if(nKx2 == 0) {
+        std::stringstream msg;
+        msg << "SelfGravityShearingBox3D: the compact pipeline cannot split "
+            << nproc << " ranks into the (" << nx << " kx modes x " << nyh
+            << " ky modes) pencil space; reduce the rank count or increase "
+               "the grid.";
+        IDEFIX_ERROR(msg);
+      }
+      const int nKy2 = nproc/nKx2;
+      x2Local = splitSize(nx, rank % nKx2, nKx2);
+      x2Offset = splitOffset(nx, rank % nKx2, nKx2);
+      ky2Local = splitSize(nyh, rank / nKx2, nKy2);
+      ky2Offset = splitOffset(nyh, rank / nKx2, nKy2);
+    }
+
     rhoCompact = IdefixArray3D<real>("SGSB3C_Rho", nz, ny, nxLoc);
     rhoY = IdefixArray3D<complex>("SGSB3C_RhoY", nz, nyh, nxLoc);
-    rhoX = IdefixArray3D<complex>("SGSB3C_RhoX", nz, kyLocal, nx);
-    rhoXP = IdefixArray3D<complex>("SGSB3C_RhoXP", vgfPadding*nz, kyLocal, nx);
+    rhoX = IdefixArray3D<complex>("SGSB3C_RhoX", zLocal, kyLocal, nx);
+    rhoXP = IdefixArray3D<complex>("SGSB3C_RhoXP", vgfPadding*nz, ky2Local, x2Local);
     fftY = std::make_unique<LocalFft>(std::array<int,3>{nxLoc, ny, nz}, 1,
                                        LocalFftKind::R2C);
     fftYinv = std::make_unique<LocalFft>(std::array<int,3>{nxLoc, ny, nz}, 1,
                                          LocalFftKind::C2R);
-    fftX = std::make_unique<LocalFft>(std::array<int,3>{nx, kyLocal, nz}, 0,
+    fftX = std::make_unique<LocalFft>(std::array<int,3>{nx, kyLocal, zLocal}, 0,
                                        LocalFftKind::C2C);
-    fftZ = std::make_unique<LocalFft>(std::array<int,3>{nx, kyLocal, vgfPadding*nz}, 2,
-                                       LocalFftKind::C2C);
+    fftZ = std::make_unique<LocalFft>(std::array<int,3>{x2Local, ky2Local, vgfPadding*nz},
+                                       2, LocalFftKind::C2C);
     transpose = std::make_unique<SpectralTranspose>(
         std::array<int,3>{nx, nyh, nz},
         std::array<int,3>{nxLoc, nyh, nz},
         std::array<int,3>{data->gbeg[IDIR] - data->nghost[IDIR], 0, 0},
-        std::array<int,3>{nx, kyLocal, nz},
-        std::array<int,3>{0, kyOffset, 0});
+        std::array<int,3>{nx, kyLocal, zLocal},
+        std::array<int,3>{0, kyOffset, zOffset});
+    if(zLocal != nz || x2Local != nx) {
+      // General case: second transpose P1 -> P2 (compact z extent, written
+      // into the head of the padded P2 buffer)
+      transpose2 = std::make_unique<SpectralTranspose>(
+          std::array<int,3>{nx, nyh, nz},
+          std::array<int,3>{nx, kyLocal, zLocal},
+          std::array<int,3>{0, kyOffset, zOffset},
+          std::array<int,3>{x2Local, ky2Local, nz},
+          std::array<int,3>{x2Offset, ky2Offset, 0});
+    }
   }
 
   phi = IdefixArray3D<real>("SGSB3D_Phi", data->np_tot[KDIR],
@@ -495,13 +554,25 @@ void SelfGravityShearingBox3D::SolvePoissonCompact() {
   // --- 4. x transform (local, in place)
   fftX->Forward(rhoX, rhoX);
 
-  // --- 5. Zero-pad the vertical direction in the pencil buffer
+  // --- 5. Move the data to the P2 pencil (full z) and zero-pad the vertical
+  // direction. In the general case the second transpose writes the compact
+  // (nz-extent) data directly into the head of the padded P2 buffer and only
+  // the padding planes need to be zeroed; in the simple case P1 = P2 and the
+  // move is a copy.
   IdefixArray3D<complex> rX = rhoX;
   IdefixArray3D<complex> rXP = rhoXP;
-  idefix_for("SGSB3C_Pad", 0, nzPad, 0, kyLocal, 0, nx,
-    KOKKOS_LAMBDA (int k, int j, int i) {
-      rXP(k,j,i) = (k < nz) ? rX(k,j,i) : complex(0.0, 0.0);
-    });
+  if(transpose2) {
+    transpose2->Forward(rhoX, rhoXP);
+    idefix_for("SGSB3C_PadZ", nz, nzPad, 0, ky2Local, 0, x2Local,
+      KOKKOS_LAMBDA (int k, int j, int i) {
+        rXP(k,j,i) = complex(0.0, 0.0);
+      });
+  } else {
+    idefix_for("SGSB3C_Pad", 0, nzPad, 0, kyLocal, 0, nx,
+      KOKKOS_LAMBDA (int k, int j, int i) {
+        rXP(k,j,i) = (k < nz) ? rX(k,j,i) : complex(0.0, 0.0);
+      });
+  }
 
   // --- 6. z transform (local, in place)
   fftZ->Forward(rhoXP, rhoXP);
@@ -520,13 +591,15 @@ void SelfGravityShearingBox3D::SolvePoissonCompact() {
     const real TWO_PI = 2.0*M_PI;
     const real PI4G = 4.0*M_PI*gravCst;
     const real dz = Lx2/nz;
-    const int kyOff = this->kyOffset;
+    const int x2Off = this->x2Offset;
+    const int ky2Off = this->ky2Offset;
     const bool analytic = this->useAnalyticKernel;
-    idefix_for("SGSB3C_Kernel", 0, nzPad, 0, kyLocal, 0, nx,
+    idefix_for("SGSB3C_Kernel", 0, nzPad, 0, ky2Local, 0, x2Local,
       KOKKOS_LAMBDA (int k, int j, int i) {
         // Global mode numbers: signed kx, non-negative ky, signed kz
-        const int ni = (2*i <= nx) ? i : i - nx;
-        const int gj = kyOff + j;
+        const int gi = x2Off + i;
+        const int ni = (2*gi <= nx) ? gi : gi - nx;
+        const int gj = ky2Off + j;
         const int gk = (2*k <= nzPad) ? k : k - nzPad;
         const real ky = TWO_PI*gj/Lx1;
         // Sheared in-plane wave number (eq. 3 of Rendon Restrepo & Gressel
@@ -575,11 +648,17 @@ void SelfGravityShearingBox3D::SolvePoissonCompact() {
   // --- 8. z inverse (local, in place)
   fftZ->Backward(rhoXP, rhoXP, 1.0/nzPad);
 
-  // --- 9. Truncate to the active planes
-  idefix_for("SGSB3C_Truncate", 0, nz, 0, kyLocal, 0, nx,
-    KOKKOS_LAMBDA (int k, int j, int i) {
-      rX(k,j,i) = rXP(k,j,i);
-    });
+  // --- 9. Truncate to the active planes: in the general case the second
+  // transpose reads them directly from the head of the P2 buffer; in the
+  // simple case the truncation is a copy.
+  if(transpose2) {
+    transpose2->Backward(rhoXP, rhoX);
+  } else {
+    idefix_for("SGSB3C_Truncate", 0, nz, 0, kyLocal, 0, nx,
+      KOKKOS_LAMBDA (int k, int j, int i) {
+        rX(k,j,i) = rXP(k,j,i);
+      });
+  }
 
   // --- 10-11. x inverse (local) and transpose back to the slab
   fftX->Backward(rhoX, rhoX, 1.0/nx);
