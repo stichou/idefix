@@ -101,6 +101,37 @@ wsim = np.array(wsim)
 sol = solve_ivp(eq89, [0.0, times[-1]], [A0, 0.0], t_eval=times, rtol=1e-10, atol=1e-12)
 wref = sol.y[0]
 
+# --- Eigenmode exactness: the solver's response Phi_hat/Sigma_hat must equal
+# the exact razor-thin eigenmode response -2 pi G / k(t) at the sheared
+# wavenumber kx(t) = kx0 + q*Om*ky*t. This isolates the self-gravity solver
+# from the scheme: the projected ratio is independent of the wave amplitude.
+respErr = 0.0
+for f in files:
+    V = readVTK(f)
+    t = V.t[0]
+    if t == 0.0:
+        # The self-gravity potential has not been computed before the first
+        # cycle; skip the initial output.
+        continue
+    x = np.squeeze(V.x).astype(np.float64)
+    y = np.squeeze(V.y).astype(np.float64)
+    rho = np.array(V.data["RHO"])
+    phiSG = np.array(V.data["phiSG"])
+    if rho.ndim == 3:
+        rho = rho[:, :, 0]
+        phiSG = phiSG[:, :, 0]
+    kx = kx0 + q * Om * ky * t
+    th = np.exp(-1j * (kx * x[:, None] + ky * y[None, :]))
+    Shat = 2.0 * np.mean((rho - Sigma0) * th)
+    Phat = 2.0 * np.mean(phiSG * th)
+    kResponse = -2.0 * np.pi * G / np.sqrt(kx * kx + ky * ky)
+    respErr = max(respErr, np.abs(Phat / Shat - kResponse) / np.abs(kResponse))
+print(f"eigenmode response error (max over outputs) = {respErr:.3e}")
+if respErr > 5.0e-2:
+    print("FAILURE!")
+    print(f"Eigenmode response error {respErr:.3e} is above the tolerance 5.0e-2")
+    sys.exit(1)
+
 # Error normalised by the peak amplitude of the reference solution.
 # The residual error is dominated by the linear-interpolation shear remap
 # acting on an increasingly oscillatory wave (kx(t) grows linearly with

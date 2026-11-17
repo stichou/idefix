@@ -40,6 +40,10 @@ class SelfGravityShearingBox2D final : public SelfGravity {
   void EnforceShearingBoxPhi(real t, int dir, BoundarySide side, IdefixArray3D<real> &);
   void EnforcePeriodic(int dir, BoundarySide side, IdefixArray3D<real> &);
 
+  // Self-gravity potential with ghost cells (for diagnostics, e.g. the
+  // eigenmode exactness test of test/SelfGravity/ShearingWave)
+  IdefixArray3D<real> GetPhi() { return phi; }
+
  private:
   void CheckCompatibility();
   void SetBoundaries(IdefixArray3D<real> &);

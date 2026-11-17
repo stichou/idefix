@@ -15,6 +15,8 @@
 
 #include "setup.hpp"
 
+#include "selfGravityShearingBox2D.hpp"
+
 // Self-gravitating linear shearing wave (Paardekooper 2012, MNRAS 421, 3286,
 // Sect. 4.2): a single adiabatic shearing wave
 //   Sigma1/Sigma0 = A cos(kx(t) x + ky y),   kx(t) = kx0 + q*Omega*ky*t,
@@ -59,6 +61,15 @@ void BodyForce(DataBlock &data, const real t, IdefixArray4D<real> &force) {
   idfx::popRegion();
 }
 
+// Output the self-gravity potential as a user-defined variable, so that the
+// analysis can measure the solver's eigenmode response Phi_hat/Sigma_hat
+// against the exact razor-thin kernel -2 pi G / k(t) (eigenmode exactness).
+void ComputeUserVars(DataBlock &data, UserDefVariablesContainer &variables) {
+  SelfGravityShearingBox2D *sg = static_cast<SelfGravityShearingBox2D*>(
+      data.gravity->selfGravity.get());
+  Kokkos::deep_copy(variables["phiSG"], sg->GetPhi());
+}
+
 Setup::Setup(Input &input, Grid &grid, DataBlock &data, Output &output) {
   Omega = input.Get<real>("Hydro","rotation",0);
   shearParameter = input.Get<real>("Hydro","shearingBox",0);
@@ -72,6 +83,7 @@ Setup::Setup(Input &input, Grid &grid, DataBlock &data, Output &output) {
   mky = input.Get<real>("Setup","ky",0);
 
   data.gravity->EnrollBodyForce(BodyForce);
+  output.EnrollUserDefVariables(&ComputeUserVars);
 }
 
 // Initialisation routine
